@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 日志文件
+logs/
+*.log
+
+# 测试和临时文件
+debug_*.py
+test_*.py
+*_backup.*
+fix_*.py
+scan_*.py
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 浏览器数据
+.playwright/
+
+# 环境变量（如果有）
+.env
+.env.local

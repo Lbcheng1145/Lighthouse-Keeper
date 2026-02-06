@@ -1,0 +1,715 @@
+import time
+import datetime
+import sys
+import io
+from playwright.sync_api import sync_playwright
+
+# 解决Windows中文输出问题
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
+# ==================== 配置区域 ====================
+
+# 页面配置
+TARGET_URL = "https://cloud.tencent.com/act/pro/double12-2025#MS"
+TARGET_TEXT = "4核4G"      # 必须包含的文字
+TARGET_BANDWIDTH = "3M"    # 必须包含的带宽信息
+
+# 价格配置
+PRICE_CONFIG = {
+    "TEST": ["79"],         # 测试模式：79元商品（一直存在，用于测试）
+    "PROD": ["38", "39"]    # 生产模式：38/39元秒杀商品（定时抢购）
+}
+
+# 模式配置
+TEST_MODE = True           # True=测试79元, False=抢购38/39元
+MONITOR_MODE = False       # True=持续监控按钮变化
+BUY_TIMES = ["10:00:00", "15:00:00"]  # 秒杀时间点
+
+# 时间配置（秒）
+class Timing:
+    LOGIN_TIMEOUT = 300        # 登录超时（5分钟）
+    LOGIN_CHECK_INTERVAL = 1   # 登录检测间隔
+    PAGE_STABLE_WAIT = 3       # 登录后页面稳定等待
+    TAB_LOAD_WAIT = 2.5        # Tab点击后加载等待
+    SCROLL_INTERVAL = 1        # 滚动间隔
+    MONITOR_INTERVAL = 0.5     # 监控检查间隔
+    MAX_WAIT_HOURS = 2         # 最大等待时间（小时）
+
+# 搜索配置
+class Search:
+    SCROLL_TIMES = 8           # 页面滚动次数
+    MAX_ELEMENTS_CHECK = 10    # 监控模式最多检查元素数
+    BUTTON_TIMEOUT = 500       # 按钮可见性超时（毫秒）
+    CONTAINER_LEVELS = range(4, 10)  # 容器查找层级范围
+
+# Tab配置
+TABS_TO_CLICK = [
+    "出海优选", "限时秒杀", "云服务器CVM", "短周期服务器",
+    "同价续费", "首单特惠", "全线产品特惠", "热卖服务器"
+]
+
+# 镜像配置
+IMAGE_OPTIONS = ["Clawdbot", "OpenClaw", "clawdbot", "OpenCloudOS"]
+
+# ==================================================
+
+def main():
+    target_prices = PRICE_CONFIG["TEST"] if TEST_MODE else PRICE_CONFIG["PROD"]
+    
+    print("="*60)
+    print("🚀 腾讯云活动页秒杀脚本 (Playwright版)")
+    if TEST_MODE:
+        print(f"🧪 测试模式: 将寻找 {target_prices} 套餐")
+    else:
+        print(f"⏰ 正式模式: 将等待 10:00/15:00 抢购 {target_prices} 套餐")
+    print("="*60)
+    
+    with sync_playwright() as p:
+        # 启动有头浏览器
+        browser = p.chromium.launch(headless=False, args=['--start-maximized'])
+        context = browser.new_context(no_viewport=True)
+        page = context.new_page()
+        
+        # 1. 打开页面
+        print("🔗 正在打开活动页面...")
+        page.goto(TARGET_URL, wait_until='domcontentloaded')
+        page.wait_for_timeout(3000)
+        
+        # 注意：不在此处强制登录
+        # 因为浏览页面不需要登录，点击购买时才会提示登录
+        # 登录逻辑已集成在 click_and_proceed() 函数中
+        
+        print("✅ 准备就绪！")
+        
+        # 2. 等待或立即执行
+        max_wait_seconds = Timing.MAX_WAIT_HOURS * 3600
+        wait_start_time = time.time()
+        
+        while True:
+            # 超时检查
+            if time.time() - wait_start_time > max_wait_seconds:
+                print(f"\n❌ 等待超时（{Timing.MAX_WAIT_HOURS}小时），退出")
+                print(f"   请检查BUY_TIMES配置: {BUY_TIMES}")
+                break
+            
+            should_buy = False
+            
+            if TEST_MODE:
+                print("🧪 测试模式: 立即开始流程...")
+                should_buy = True
+            else:
+                now = datetime.datetime.now()
+                current_time = now.strftime("%H:%M:%S")
+                for t in BUY_TIMES:
+                    target = datetime.datetime.strptime(t, "%H:%M:%S").replace(year=now.year, month=now.month, day=now.day)
+                    diff = (target - now).total_seconds()
+                    if -5 < diff < 2: 
+                        should_buy = True
+                        break
+                
+                if not should_buy:
+                    print(f"\r⏳ 当前时间: {current_time} | 等待目标: {BUY_TIMES}", end="")
+                    time.sleep(0.5)
+            
+            if should_buy:
+                print(f"\n⚡ 触发抢购流程！")
+                
+                # 监控模式：持续监控按钮状态
+                if MONITOR_MODE and not TEST_MODE:
+                    print("📊 监控模式已启用 - 将持续监控按钮状态变化")
+                    success = monitor_button_change(page, target_prices)
+                else:
+                    success = do_buy(page)
+                
+                if success:
+                    print("🎉 流程结束！")
+                    if TEST_MODE: break 
+                    break
+                else:
+                    print("❌ 流程未完成，重试或等待...")
+                    if TEST_MODE: break
+                    time.sleep(1)
+
+        print("✅ 脚本运行结束。请在浏览器中完成剩余支付步骤。")
+        print("按 Ctrl+C 退出")
+        try:
+            while True: 
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\n正在关闭浏览器...")
+            browser.close()
+            print("✅ 已退出")
+
+def monitor_button_change(page, target_prices):
+    """
+    监控模式：找到商品后持续监控按钮状态变化
+    用于观察秒杀时刻按钮从"已抢光"变为"立即抢购"的瞬间
+    """
+    print("🔍 进入按钮监控模式...")
+    print("   持续监控按钮状态，检测到可购买时立即点击\n")
+    
+    last_status = {}
+    check_count = 0
+    
+    while True:
+        check_count += 1
+        
+        # 每20次检查显示一次进度
+        if check_count % 20 == 0:
+            current_time = time.strftime("%H:%M:%S")
+            print(f"[{current_time}] 监控中... (已检查 {check_count} 次)")
+        
+        # 搜索目标商品
+        spec_els = page.get_by_text(TARGET_TEXT, exact=False).all()
+        
+        for i, el in enumerate(spec_els[:10]):  # 监控前10个
+            try:
+                # 查找容器
+                container = None
+                for level in range(4, 10):
+                    try:
+                        test_container = el.locator(f'xpath=./ancestor::div[{level}]')
+                        if test_container.count():
+                            text = test_container.inner_text()
+                            
+                            # 检查价格
+                            has_target_price = False
+                            for price in target_prices:
+                                price_num = price.replace("元", "")
+                                if price_num in text.replace("\n", "").replace(" ", ""):
+                                    has_target_price = True
+                                    break
+                            
+                            if not has_target_price:
+                                continue
+                            
+                            # 检查按钮
+                            btns = test_container.locator('button, a[role="button"]').all()
+                            for btn in btns:
+                                try:
+                                    if btn.is_visible(timeout=300):
+                                        btn_text = btn.inner_text()
+                                        
+                                        # 只关注有文字的按钮
+                                        if not btn_text.strip():
+                                            continue
+                                        
+                                        # 生成唯一ID
+                                        item_id = f"{i}_{text[:30].strip()}"
+                                        
+                                        # 检测状态变化
+                                        if item_id not in last_status or last_status[item_id] != btn_text:
+                                            current_time = time.strftime("%H:%M:%S")
+                                            
+                                            old_status = last_status.get(item_id, "(首次发现)")
+                                            print(f"\n{'='*60}")
+                                            print(f"[{current_time}] 商品 [{i}] 按钮状态变化！")
+                                            print(f"  旧状态: {old_status}")
+                                            print(f"  新状态: {btn_text}")
+                                            print(f"  商品: {text[:80]}...")
+                                            print(f"{'='*60}\n")
+                                            
+                                            last_status[item_id] = btn_text
+                                            
+                                            # === 判断是否可购买 ===
+                                            # 1. 明确可购买
+                                            if any(kw in btn_text for kw in ["立即抢购", "立即购买"]):
+                                                if "已" not in btn_text:  # 排除"已抢光"
+                                                    print(f"🎯 检测到可购买状态！立即执行购买...")
+                                                    return click_and_proceed(page, btn)
+                                            
+                                            # 2. 简单的"抢购"或"购买"（没有其他前缀）
+                                            elif btn_text in ["抢购", "购买"]:
+                                                print(f"🎯 检测到可购买状态！立即执行购买...")
+                                                return click_and_proceed(page, btn)
+                                            
+                                            # 3. 不可购买状态（记录但继续监控）
+                                            elif any(kw in btn_text for kw in ["已抢光", "售罄", "预约", "即将"]):
+                                                print(f"⏳ 暂不可购买，继续监控...")
+                                            
+                                            # 4. 未知状态（报告）
+                                            else:
+                                                print(f"❓ 未知按钮状态: '{btn_text}' - 继续观察")
+                                            
+                                            container = test_container
+                                            break
+                                except:
+                                    continue
+                            
+                            if container:
+                                break
+                    except:
+                        continue
+            except:
+                continue
+        
+        # 每0.5秒刷新一次
+        time.sleep(0.5)
+
+def do_buy(page):
+    """执行抢购逻辑"""
+    target_prices = PRICE_CONFIG["TEST"] if TEST_MODE else PRICE_CONFIG["PROD"]
+    
+    # === 核心修复：点击所有 Tab 展开商品 ===
+    print("📑 正在展开所有商品Tab...")
+    
+    # 扩展Tab列表，确保所有商品都加载
+    tabs_to_click = ["出海优选", "限时秒杀", "云服务器CVM", "短周期服务器",
+                     "同价续费", "首单特惠", "全线产品特惠", "热卖服务器"]
+    
+    for tab_name in tabs_to_click:
+        try:
+            # 查找所有匹配的Tab（可能有重复）
+            tabs = page.get_by_text(tab_name, exact=False).all()
+            for tab in tabs[:1]:  # 只点第一个
+                try:
+                    if tab.is_visible(timeout=1000):
+                        print(f"   点击Tab: {tab_name}")
+                        tab.click()
+                        page.wait_for_timeout(2500)  # 增加等待时间到2.5秒
+                        break
+                except:
+                    pass
+        except:
+            pass
+    
+    # 先回到顶部
+    page.keyboard.press("Home")
+    time.sleep(1)
+    
+    # 完整滚动页面加载所有商品（关键！）
+    print("📜 滚动页面加载商品...")
+    for i in range(8):  # 增加滚动次数
+        page.keyboard.press("PageDown")
+        time.sleep(1)  # 每次滚动后等待1秒
+    # =====================================
+    
+    print(f"🔍 寻找目标商品 (价格: {target_prices})...")
+    
+    target_card = None
+    
+    # === 通用策略：通过配置特征定位，不依赖按钮状态 ===
+    # 根据用户反馈：按钮状态可能是"预约成功"/"即将开始"/"立即抢购"/"已抢光"等
+    # 所以我们只根据商品配置特征来定位，找到后再判断按钮
+    
+    print(f"   搜索配置特征: {TARGET_TEXT}")
+    spec_els = page.get_by_text(TARGET_TEXT, exact=False).all()
+    print(f"   找到 {len(spec_els)} 个 '{TARGET_TEXT}' 元素")
+    
+    for i, el in enumerate(spec_els):
+        try:
+            # 找到商品容器（尝试多个层级）
+            container = None
+            for level in range(4, 10):
+                try:
+                    test_container = el.locator(f'xpath=./ancestor::div[{level}]')
+                    if test_container.count():
+                        text = test_container.inner_text()
+                        # 必须包含价格关键词（精确匹配，避免误匹配）
+                        has_price = False
+                        for price in target_prices:
+                            # 去掉 "元" 单独检查数字
+                            price_num = price.replace("元", "")
+                            # 使用正则精确匹配：前后必须是非数字字符或边界
+                            import re
+                            # 匹配模式：价格数字前后不能是其他数字
+                            # 例如: "38元" "38/年" "¥38" " 38 " 可以匹配
+                            # 但 "380元" "138元" 不匹配
+                            pattern = r'(?<!\d)' + re.escape(price_num) + r'(?!\d)'
+                            if re.search(pattern, text.replace("\n", " ").replace("  ", " ")):
+                                has_price = True
+                                break
+                        
+                        # 检查是否有任何按钮（不限制按钮文字）
+                        btns = test_container.locator('button, a[role="button"]').all()
+                        has_any_btn = False
+                        for btn in btns:
+                            try:
+                                if btn.is_visible(timeout=500):
+                                    btn_text = btn.inner_text()
+                                    # 只要有按钮就行，不管文字是什么
+                                    # 可能是: 购买、抢购、已抢光、预约成功、即将开始等
+                                    if btn_text.strip():  # 按钮有文字
+                                        has_any_btn = True
+                                        break
+                            except:
+                                continue
+                        
+                        if has_price and has_any_btn:
+                            container = test_container
+                            break
+                except:
+                    continue
+            
+            if not container or not container.count():
+                continue
+            
+            full_text = container.inner_text()
+            
+            # 测试模式不检查带宽
+            if not TEST_MODE and TARGET_BANDWIDTH not in full_text:
+                continue
+            
+            # 找按钮并判断状态
+            btns = container.locator('button, a[role="button"]').all()
+            for btn in btns:
+                try:
+                    if not btn.is_visible(timeout=500):
+                        continue
+                    btn_text = btn.inner_text()
+                    
+                    if not btn_text.strip():
+                        continue
+                    
+                    # === 按钮状态分类处理 ===
+                    
+                    # 1. 不可购买状态（跳过但报告）
+                    if any(kw in btn_text for kw in ["已抢光", "售罄", "抢光"]):
+                        print(f"⚠️ 找到目标商品但已售罄！ (元素 [{i}])")
+                        print(f"   商品信息: {full_text[:100]}...")
+                        print(f"   按钮状态: {btn_text}")
+                        print(f"   提示: 等待秒杀时间或商品已结束")
+                        continue
+                    
+                    # 2. 等待状态（报告但不点击）
+                    if any(kw in btn_text for kw in ["预约", "即将", "等待"]):
+                        print(f"⏳ 找到目标商品，等待开始！ (元素 [{i}])")
+                        print(f"   商品信息: {full_text[:100]}...")
+                        print(f"   按钮状态: {btn_text}")
+                        print(f"   提示: 秒杀尚未开始，继续监控...")
+                        continue
+                    
+                    # 3. 非购买按钮（跳过）
+                    if any(skip in btn_text for skip in ["领取", "续费", "有效"]):
+                        print(f"   ⏭️ 跳过非购买按钮: {btn_text}")
+                        continue
+                    
+                    # 4. 可购买状态（立即点击！）
+                    if any(kw in btn_text for kw in ["抢购", "购买"]):
+                        print(f"✨ 找到目标商品且可购买！ (元素 [{i}])")
+                        print(f"   商品信息: {full_text[:100]}...")
+                        print(f"   按钮文字: {btn_text}")
+                        target_card = container
+                        
+                        # 直接点击
+                        return click_and_proceed(page, btn)
+                    
+                    # 5. 其他未知状态（报告但不点击，等待人工确认）
+                    else:
+                        print(f"❓ 找到商品但按钮状态未知: {btn_text}")
+                        print(f"   商品信息: {full_text[:100]}...")
+                        print(f"   建议: 人工检查按钮'{btn_text}'是否可点击")
+                        
+                except:
+                    continue
+        except Exception as e:
+            continue
+
+    if not target_card:
+        print(f"❌ 未找到目标商品")
+        print("💡 调试信息: 页面上包含 '4核4G' 的文本:")
+        debug_els = page.get_by_text(TARGET_TEXT).all()
+        for i, el in enumerate(debug_els[:3]):
+            try:
+                print(f"   [{i}] {el.inner_text()[:60]}")
+            except: pass
+        return False
+
+def click_and_proceed(page, buy_btn):
+    """点击购买按钮并处理后续流程（包括登录）"""
+    print("👇 点击购买按钮...")
+    
+    old_url = page.url
+    
+    # 保存商品信息（用于登录后重新定位）
+    try:
+        product_container = buy_btn.locator('xpath=./ancestor::div[6]')
+        product_text = product_container.inner_text()[:100] if product_container.count() else ""
+    except:
+        product_text = ""
+    
+    # 点击购买按钮
+    try:
+        with page.expect_popup(timeout=3000) as popup_info:
+            buy_btn.click()
+        new_page = popup_info.value
+        print("📄 新标签页打开，切换...")
+        page = new_page
+    except:
+        print("📄 未检测到新标签页，继续在当前页...")
+        buy_btn.click()
+        page.wait_for_timeout(2000)
+    
+    # === 关键修复：检测登录弹窗 ===
+    print(\"🔐 检查是否需要登录...\")\n    \n    login_detected = False\n    \n    # 多次尝试检测（因为弹窗可能有延迟）
+    max_attempts = 3\n    for attempt in range(max_attempts):\n        try:\n            # 检测登录相关元素（多种可能）\n            login_indicators = [\n                'text=登录',\n                'text=扫码登录',\n                'text=微信登录',\n                '[class*=\"login\"]',\n                'iframe[src*=\"login\"]'\n            ]\n            \n            for indicator in login_indicators:\n                # 增加等待时间到3秒\n                if page.locator(indicator).first.is_visible(timeout=3000):\n                    login_detected = True\n                    print(f\"⚠️ 检测到登录需求: {indicator}\")\n                    break\n            \n            if login_detected:\n                break\n            \n            # 如果第一次没检测到，等待1秒后重试\n            if attempt < max_attempts - 1:\n                print(f\"  第{attempt+1}次检测未发现登录弹窗，等待后重试...\")\n                page.wait_for_timeout(1000)\n        except:\n            pass
+    
+    if login_detected:
+        print("⏳ 等待您完成登录（扫码）...")
+        print("   提示：登录后页面可能刷新，脚本会自动重新购买")
+        
+        # ===== 阶段1：等待登录弹窗/二维码出现 =====
+        print("📱 等待登录弹窗显示...")
+        qr_appeared = False
+        wait_start = time.time()
+        
+        while time.time() - wait_start < 10:  # 最多等10秒
+            try:
+                qr_selectors = [
+                    'img[alt*="二维码"]',
+                    'img[src*="qrcode"]',
+                    '.qrcode-img',
+                    'canvas[class*="qrcode"]',
+                    '[class*="login-qrcode"]',
+                    'iframe[src*="qrcode"]',
+                    'iframe[src*="login"]'
+                ]
+                for selector in qr_selectors:
+                    if page.locator(selector).first.is_visible(timeout=500):
+                        qr_appeared = True
+                        print(f"✅ 检测到登录弹窗（{selector}）")
+                        break
+                
+                if qr_appeared:
+                    break
+            except:
+                pass
+            
+            time.sleep(0.5)
+        
+        if not qr_appeared:
+            print("⚠️ 未检测到登录弹窗，可能已登录或弹窗未出现")
+            print("   继续尝试检测登录状态...")
+        
+        # ===== 阶段2：等待登录完成 =====
+        login_timeout = 120  # 最多等待2分钟
+        login_start = time.time()
+        
+        while True:
+            if time.time() - login_start > login_timeout:
+                print("❌ 登录超时")
+                return False
+            
+            try:
+                # 检测登录是否完成
+                qr_code_gone = False
+                login_popup_gone = False
+                
+                # 方式1：检测二维码消失（只有在二维码出现过的情况下才有效）
+                if qr_appeared:
+                    try:
+                        qr_selectors = [
+                            'img[alt*="二维码"]',
+                            'img[src*="qrcode"]',
+                            '.qrcode-img',
+                            'canvas[class*="qrcode"]',
+                            '[class*="login-qrcode"]'
+                        ]
+                        qr_visible = False
+                        for selector in qr_selectors:
+                            if page.locator(selector).first.is_visible(timeout=300):
+                                qr_visible = True
+                                break
+                        qr_code_gone = not qr_visible
+                    except:
+                        qr_code_gone = True
+                
+                # 方式2：检测登录弹窗消失
+                try:
+                    login_modal_selectors = [
+                        '[class*="login-modal"]',
+                        '[class*="login-dialog"]',
+                        '[role="dialog"]',
+                        '.modal[style*="display: block"]'
+                    ]
+                    modal_visible = False
+                    for selector in login_modal_selectors:
+                        if page.locator(selector).first.is_visible(timeout=300):
+                            modal_visible = True
+                            break
+                    login_popup_gone = not modal_visible
+                except:
+                    login_popup_gone = True
+                
+                # 方式3：URL变化（离开登录页或弹窗关闭）
+                url_changed = page.url != old_url and 'login' not in page.url.lower()
+                
+                # 方式4：检测用户信息出现（登录后顶部导航会显示用户名/头像）
+                user_logged_in = False
+                try:
+                    user_selectors = [
+                        '[class*="user-info"]',
+                        '[class*="user-name"]',
+                        '[class*="avatar"]',
+                        'text=退出登录'
+                    ]
+                    for selector in user_selectors:
+                        if page.locator(selector).first.is_visible(timeout=300):
+                            user_logged_in = True
+                            break
+                except:
+                    pass
+                
+                # 综合判断：
+                # - 如果二维码出现过：必须等二维码消失
+                # - 如果二维码未出现：等URL变化或检测到用户信息
+                login_complete = False
+                if qr_appeared:
+                    login_complete = qr_code_gone or user_logged_in
+                else:
+                    login_complete = url_changed or user_logged_in
+                
+                if login_complete:
+                    print("✅ 登录完成！")
+                    page.wait_for_timeout(2000)
+                    break
+            except Exception as e:
+                # 记录异常但继续等待
+                if time.time() - login_start < 5:  # 只在前5秒输出详细错误
+                    print(f"  检测中... ({e})")
+                pass
+            
+            time.sleep(1)
+        
+        # 登录后等待页面稳定
+        page.wait_for_load_state('domcontentloaded')
+        page.wait_for_timeout(2000)
+        
+        # === 关键：检查是否回到了活动页（而不是购买页） ===
+        current_url = page.url
+        print(f"📍 当前URL: {current_url}")
+        
+        # 如果回到了活动页，需要重新点击购买
+        if 'act/pro' in current_url or 'double12' in current_url:
+            print("⚠️ 检测到页面刷新回到活动页，需要重新购买...")
+            
+            # 重新执行购买流程
+            print("🔄 正在重新定位商品...")
+            
+            # 等待页面稳定
+            page.wait_for_timeout(3000)
+            
+            # 重新搜索商品并点击购买
+            target_prices = PRICE_CONFIG["TEST"] if TEST_MODE else PRICE_CONFIG["PROD"]
+            
+            # 滚动页面确保商品可见
+            for _ in range(3):
+                page.keyboard.press("PageDown")
+                time.sleep(0.5)
+            
+            # 重新查找商品
+            spec_els = page.get_by_text(TARGET_TEXT, exact=False).all()
+            print(f"   找到 {len(spec_els)} 个 '{TARGET_TEXT}' 元素")
+            
+            found_and_clicked = False
+            for i, el in enumerate(spec_els[:5]):  # 只检查前5个，加快速度
+                try:
+                    for level in range(4, 8):
+                        container = el.locator(f'xpath=./ancestor::div[{level}]')
+                        if container.count():
+                            text = container.inner_text()
+                            
+                            # 检查价格（精确匹配）
+                            has_price = False
+                            import re
+                            for p in target_prices:
+                                price_num = p.replace("元", "")
+                                # 精确匹配：前后不能是其他数字
+                                pattern = r'(?<!\d)' + re.escape(price_num) + r'(?!\d)'
+                                if re.search(pattern, text.replace("\n", " ")):
+                                    has_price = True
+                                    break
+                            
+                            if has_price:
+                                # 查找购买按钮
+                                btns = container.locator('button, a[role="button"]').all()
+                                for btn in btns:
+                                    try:
+                                        if btn.is_visible(timeout=500):
+                                            btn_text = btn.inner_text()
+                                            if any(kw in btn_text for kw in ["抢购", "购买"]) and "已" not in btn_text:
+                                                print(f"✅ 重新找到商品，点击购买...")
+                                                btn.click()
+                                                page.wait_for_timeout(3000)
+                                                found_and_clicked = True
+                                                break
+                                    except:
+                                        continue
+                                
+                                if found_and_clicked:
+                                    break
+                        
+                        if found_and_clicked:
+                            break
+                except:
+                    continue
+                
+                if found_and_clicked:
+                    break
+            
+            if not found_and_clicked:
+                print("❌ 登录后无法重新定位到商品")
+                print("   可能原因：商品已售罄或页面结构变化")
+                return False
+    
+    # ===============================
+    # 如果没有登录弹窗，说明已登录，应该直接进入购买页
+    # 需要等待页面跳转完成
+    # ===============================
+    
+    if not login_detected:
+        print("ℹ️ 未检测到登录需求，可能已登录")
+        print("⏳ 等待页面跳转...")
+        page.wait_for_load_state('domcontentloaded')
+        page.wait_for_timeout(3000)  # 额外等待3秒确保页面稳定
+    
+    # 检查是否在购买页
+    print("📄 检查页面状态...")
+    
+    if page.url != old_url:
+        print(f"✅ 页面已跳转: {page.url}")
+    else:
+        print("⚠️ 页面URL未变化，可能在弹窗中")
+    
+    # 等待页面加载
+    print("⏳ 等待配置页加载...")
+    page.wait_for_load_state('domcontentloaded')
+    page.wait_for_timeout(2000)
+    
+    # 选择镜像
+    print("💿 正在选择镜像: OpenClaw (Clawdbot)...")
+    return select_image(page)
+
+def select_image(page):
+    """在购买页选择镜像"""
+    try:
+        page.wait_for_timeout(3000)
+        
+        # 尝试查找 Clawdbot 或 OpenClaw
+        print("   搜索镜像: Clawdbot / OpenClaw...")
+        
+        # 策略A: 直接查找文字
+        target_options = ["Clawdbot", "OpenClaw", "clawdbot", "OpenCloudOS"]
+        for opt in target_options:
+            try:
+                img_el = page.locator(f'text={opt}').first
+                if img_el.is_visible(timeout=1000):
+                    print(f"✅ 找到镜像: {opt}，点击选择...")
+                    img_el.click()
+                    page.wait_for_timeout(1000)
+                    print("✅ 镜像选择完成")
+                    return True
+            except:
+                continue
+        
+        print("⚠️ 未找到指定镜像，请手动选择！")
+        print("   (浏览器会保持打开，请在窗口中手动选择)")
+        return True
+        
+    except Exception as e:
+        print(f"⚠️ 镜像选择出错: {e}")
+        print("👉 请手动选择镜像！")
+        return True
+
+if __name__ == "__main__":
+    main()
