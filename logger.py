@@ -2,8 +2,20 @@
 日志系统 - 支持控制台和文件双输出
 """
 import logging
+import sys
 import time
 from pathlib import Path
+
+
+def _app_dir():
+    """返回可写的工作目录。
+
+    - 源码运行: 脚本所在目录
+    - PyInstaller 单文件/单目录运行: EXE 所在目录（而非临时解包目录 _MEIPASS）
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent
 
 
 class Logger:
@@ -27,7 +39,7 @@ class Logger:
     def _setup_logger(self):
         """配置日志系统"""
         # 创建logs目录
-        log_dir = Path(__file__).parent / "logs"
+        log_dir = _app_dir() / "logs"
         log_dir.mkdir(exist_ok=True)
         
         # 日志文件名：logs/purchase_20260204_163045.log
@@ -57,7 +69,14 @@ class Logger:
         self.logger.addHandler(file_handler)
         
         # 控制台处理器（只显示INFO及以上）
-        console_handler = logging.StreamHandler()
+        # 显式写到 stdout：main.py 已把 stdout 包装成 UTF-8，
+        # 而 Windows 控制台默认 stderr 是 GBK，会让 ✓ / ⏳ 等符号抛
+        # UnicodeEncodeError 并被 logging 静默吞掉。
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+        console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(logging.INFO)
         console_handler.setFormatter(
             logging.Formatter(log_format, date_format)

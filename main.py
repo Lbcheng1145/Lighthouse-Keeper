@@ -4,18 +4,105 @@
 """
 import sys
 import io
+import os
 import time
 import datetime
+from pathlib import Path
+
 from playwright.sync_api import sync_playwright
 
 # 解决Windows中文输出问题
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+# 注意：PyInstaller windowed(无控制台) 模式下 stdout/stderr 为 None，
+# 直接访问 .buffer 会抛 AttributeError 导致启动即崩溃，故需判空。
+if sys.stdout is not None:
+    sys.stdout = io.TextIOWrapper(
+        sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True
+    )
+if sys.stderr is not None:
+    sys.stderr = io.TextIOWrapper(
+        sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True
+    )
 
 # 导入模块
 from config import *
 from logger import log, get_log_file
 from product_finder import ProductFinder
 from purchase_flow import PurchaseFlow
+
+
+def _app_dir():
+    """EXE 所在目录；源码运行时为脚本目录。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent
+
+
+def _short_err(err):
+    """把 Playwright 冗长的多行报错压成一行，便于日志阅读。"""
+    if err is None:
+        return "(无)"
+    text = str(err).strip().splitlines()
+    return text[0][:200] if text else "(空)"
+
+
+def _resolve_state_file(browser_cfg):
+    """返回登录态快照文件路径（storage_state.json）。"""
+    base = _resolve_profile_dir(browser_cfg)
+    return base.parent / "session-state.json"
+
+
+def _load_session_state(context, state_file):
+    """把上次保存的 cookie 回灌到当前浏览器上下文。
+
+    为什么需要这一步：
+    腾讯云的登录 cookie 是"会话型"（无 expires），Chromium 不会把它们
+    写进 profile 的 Cookies 数据库，关闭浏览器即丢失。
+    因此单靠 user_data_dir 无法保住登录态，必须额外做快照回灌。
+    """
+    if not state_file.is_file():
+        return False
+    try:
+        import json
+
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+        cookies = data.get("cookies") or []
+        if not cookies:
+            return False
+        context.add_cookies(cookies)
+        log(f"已加载上次的登录态快照（{len(cookies)} 条 cookie）", "INFO")
+        return True
+    except Exception as e:
+        log(f"登录态快照加载失败（将按未登录处理）: {_short_err(e)}", "WARNING")
+        return False
+
+
+def _save_session_state(context, state_file):
+    """保存当前登录态，供下次启动回灌。"""
+    try:
+        context.storage_state(path=str(state_file))
+        log(f"登录态已保存: {state_file.name}", "INFO")
+        return True
+    except Exception as e:
+        log(f"登录态保存失败: {_short_err(e)}", "WARNING")
+        return False
+
+
+def _resolve_profile_dir(browser_cfg):
+    """返回持久化用户数据目录。
+
+    放在 EXE 同级 browser-data/ 下，保证：
+    - 程序更新/重新打包后登录态仍在
+    - 不与用户日常使用的 Edge/Chrome 主配置冲突
+    """
+    configured = browser_cfg.get("profile_dir")
+    if configured:
+        base = Path(configured)
+        if not base.is_absolute():
+            base = _app_dir() / base
+    else:
+        base = _app_dir() / "browser-data"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
 
 
 class TencentCloudBot:
@@ -28,8 +115,10 @@ class TencentCloudBot:
             "run_mode": RUN_MODE,
             "timeout": TIMEOUT_CONFIG,
             "images": IMAGE_OPTIONS,
+            "browser": BROWSER_CONFIG,
         }
         self.browser = None
+        self.context = None
         self.page = None
     
     def run(self):
@@ -109,10 +198,14 @@ class TencentCloudBot:
             while True:
                 if handler.check_login_success_simple():
                     log("登录成功！准备进行下一步...", "SUCCESS")
+                    # 登录成功立即落盘，避免用户直接关窗口导致登录态丢失
+                    self._persist_session()
                     break
                 time.sleep(1)
         else:
             log("检测到已登录，继续下一步", "SUCCESS")
+            # 顺手刷新一次快照（延长会话型 cookie 的有效窗口）
+            self._persist_session()
 
     def _locate_target_product(self, finder):
         """提前定位商品并滚动到可见区域"""
@@ -163,24 +256,67 @@ class TencentCloudBot:
         print("="*60)
     
     def _init_browser(self, playwright):
-        """初始化浏览器"""
-        log("启动浏览器...", "INFO")
-        try:
-            self.browser = playwright.chromium.launch(
-                headless=False,
-                args=[
-                    '--start-maximized',
-                    '--no-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu',  # 禁用GPU加速，减少显存/内存占用
-                    '--disable-extensions'
-                ]
-            )
-            context = self.browser.new_context(no_viewport=True)
-            self.page = context.new_page()
-        except Exception as e:
-            log(f"浏览器启动失败: {e}", "ERROR")
-            raise e
+        """初始化浏览器：调用本机自带的浏览器 + 持久化用户目录
+
+        两层保活缺一不可：
+        1. user_data_dir 持久化目录 —— 保存 localStorage、IndexedDB 等
+        2. session-state.json 快照   —— 保存 cookie，包括"会话型"cookie
+           （腾讯云登录 cookie 无 expires，Chromium 不会写盘，必须靠快照）
+        """
+        browser_cfg = self.config.get("browser", {}) or {}
+        channels = browser_cfg.get(
+            "channels", ["msedge", "chrome", None]
+        ) or [None]
+        profile_dir = _resolve_profile_dir(browser_cfg)
+        state_file = _resolve_state_file(browser_cfg)
+
+        launch_args = [
+            '--start-maximized',
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--disable-extensions',
+            '--disable-session-crashed-bubble',
+        ]
+
+        last_error = None
+        for channel in channels:
+            label = channel or "Playwright 自带内核"
+            log(f"尝试使用浏览器: {label}", "INFO")
+            try:
+                self.context = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    channel=channel,
+                    headless=False,
+                    no_viewport=True,
+                    args=launch_args,
+                )
+                self.page = (
+                    self.context.pages[0]
+                    if self.context.pages
+                    else self.context.new_page()
+                )
+                log(f"浏览器已启动: {label}", "SUCCESS")
+                log(f"用户数据目录: {profile_dir}", "INFO")
+                # 回灌上次的登录态（关键：会话型 cookie 只能靠快照保住）
+                _load_session_state(self.context, state_file)
+                return
+            except Exception as e:
+                last_error = e
+                log(f"使用 {label} 启动失败: {_short_err(e)}", "WARNING")
+
+        log(f"所有浏览器均启动失败: {last_error}", "ERROR")
+        raise RuntimeError(
+            "无法启动浏览器。请确认本机已安装 Microsoft Edge 或 Google Chrome。\n"
+            f"最后一次错误: {_short_err(last_error)}"
+        )
+
+    def _persist_session(self):
+        """立即把当前登录态落盘。"""
+        browser_cfg = self.config.get("browser", {}) or {}
+        if self.context is None:
+            return False
+        return _save_session_state(self.context, _resolve_state_file(browser_cfg))
     
     def _open_page(self):
         """打开活动页面"""
@@ -330,13 +466,35 @@ class TencentCloudBot:
         """保持浏览器打开"""
         log("浏览器保持打开，按 Ctrl+C 退出", "INFO")
         try:
+            # 用户直接关掉浏览器窗口时，context 会失效，需及时退出并落盘
             while True:
+                if self.context is not None:
+                    try:
+                        if not self.context.pages:
+                            log("浏览器窗口已被关闭，准备保存登录态并退出", "WARNING")
+                            break
+                    except Exception:
+                        break
                 time.sleep(1)
         except KeyboardInterrupt:
-            log("正在关闭浏览器...", "INFO")
-            if self.browser:
-                self.browser.close()
-            log("已退出", "SUCCESS")
+            log("收到 Ctrl+C", "INFO")
+
+        # 无论哪种方式退出，都先尝试保存登录态
+        try:
+            self._persist_session()
+        except Exception:
+            pass
+
+        log("正在关闭浏览器...", "INFO")
+        # 持久化上下文下没有独立的 browser 对象，需关 context
+        if self.context:
+            try:
+                self.context.close()
+            except Exception:
+                pass
+        elif self.browser:
+            self.browser.close()
+        log("已退出", "SUCCESS")
 
 
 def main():

@@ -29,3 +29,13 @@ scan_*.py
 # 环境变量（如果有）
 .env
 .env.local
+
+# 打包产物
+build/
+dist/
+.buildenv/
+
+# 运行时生成的浏览器用户数据（含登录凭据，禁止提交）
+browser-data/
+session-state.json
+config.local.py
