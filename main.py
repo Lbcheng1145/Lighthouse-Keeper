@@ -93,7 +93,12 @@ def _resolve_profile_dir(browser_cfg):
     放在 EXE 同级 browser-data/ 下，保证：
     - 程序更新/重新打包后登录态仍在
     - 不与用户日常使用的 Edge/Chrome 主配置冲突
+
+    若目录无法创建（只读介质、被杀软锁定等），退回到系统临时目录，
+    避免因为一个目录问题导致整个程序起不来。
     """
+    import tempfile
+
     configured = browser_cfg.get("profile_dir")
     if configured:
         base = Path(configured)
@@ -101,8 +106,22 @@ def _resolve_profile_dir(browser_cfg):
             base = _app_dir() / base
     else:
         base = _app_dir() / "browser-data"
-    base.mkdir(parents=True, exist_ok=True)
-    return base
+
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+    except OSError as exc:
+        fallback = Path(tempfile.gettempdir()) / "LighthouseKeeper-data"
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            raise RuntimeError(
+                f"无法创建用户数据目录，且回退目录也失败:\n"
+                f"  首选: {base} ({exc})\n  回退: {fallback}"
+            )
+        print(f"[警告] 无法创建 {base}（{exc}），改用 {fallback}")
+        print("[警告] 注意：该目录是临时的，登录态可能无法长期保留")
+        return fallback
 
 
 class TencentCloudBot:
@@ -507,8 +526,12 @@ def main():
         import traceback
         error_details = traceback.format_exc()
         log(f"错误详情:\n{error_details}", "ERROR")
-        print(f"\n❌ 程序崩溃! 错误详情已记录到日志文件")
-        print(f"请查看日志: {get_log_file()}")
+        print("\n程序崩溃! 详见上方输出")
+        log_path = get_log_file()
+        if log_path:
+            print(f"日志文件: {log_path}")
+        else:
+            print("（本次未能创建日志文件，错误信息仅见上方输出）")
         try:
             input("按回车键退出...")
         except:

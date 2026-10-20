@@ -70,12 +70,48 @@ python main.py
 
 *   `main.py`: 主程序入口，负责调度整个流程。
 *   `config.py`: 配置文件，包含商品信息、运行模式和超时设置。
+*   `config.example.py`: 外置配置模板，复制为 `config.local.py` 后可覆盖内置配置。
 *   `product_finder.py`: 核心模块，负责在复杂的页面中精准查找和定位商品。
 *   `purchase_flow.py`: 购买流程模块，处理下单、弹窗和协议勾选。
 *   `login_handler.py`: 负责检测登录状态和处理登录弹窗。
 *   `logger.py`: 日志模块，支持控制台输出和文件记录。
 *   `utils.py`: 通用工具函数。
+*   `launcher.py`: 打包入口（PyInstaller 使用）。
+*   `LighthouseKeeper.spec`: PyInstaller 打包配置。
+*   `scripts/ci_smoke_test.py`: CI 冒烟测试，校验打包产物能否正常启动。
+*   `.github/workflows/build.yml`: GitHub Actions 自动构建。
 *   `logs/`: 存放运行日志（自动生成）。
+
+## 📦 打包为可执行文件
+
+### 自动构建（推荐）
+
+推送到 `main` 分支或创建 `v*` 标签时，GitHub Actions 会自动构建：
+
+*   在 **Actions** 页面下载 `LighthouseKeeper-windows` 产物；
+*   推送形如 `v1.0.0` 的标签会自动创建 Release 并附带 zip。
+
+### 本地构建
+
+```bash
+pip install -r requirements.txt pyinstaller
+pyinstaller LighthouseKeeper.spec --noconfirm
+```
+
+产物位于 `dist/LighthouseKeeper/`，双击 `LighthouseKeeper.exe` 即可运行。
+
+**不需要单独安装浏览器**：程序会调用本机已安装的 Microsoft Edge
+（或 Google Chrome），因此包体较小（约 47 MB）。
+
+### 关于登录态
+
+程序使用持久化的用户数据目录，登录态保存在 `browser-data/` 和
+`session-state.json`。腾讯云的登录 cookie 属于「会话型」（不写入磁盘），
+所以程序会在登录成功后主动把 cookie 存成快照，下次启动回灌，
+避免每次都要重新扫码。
+
+> 这两个位置含有你的登录凭据，已被 `.gitignore` 排除，请勿提交或外发。
+> 若需更换账号，删除它们后重新扫码即可。
 
 ## ⚠️ 注意事项
 

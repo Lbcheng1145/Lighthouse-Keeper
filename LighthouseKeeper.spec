@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller 打包配置
 
-构建:
-    .buildenv\Scripts\pyinstaller.exe LighthouseKeeper.spec --noconfirm
+构建（在项目根目录执行）:
+    pyinstaller LighthouseKeeper.spec --noconfirm
 
 产物:
     dist/LighthouseKeeper/LighthouseKeeper.exe  (onedir，启动快)

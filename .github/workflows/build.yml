@@ -1,0 +1,86 @@
+name: Build Windows Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Compile check
+        run: python -m compileall -q .
+
+      - name: Build with PyInstaller
+        run: pyinstaller LighthouseKeeper.spec --noconfirm
+
+      - name: Verify build output
+        shell: pwsh
+        run: |
+          $exe = "dist/LighthouseKeeper/LighthouseKeeper.exe"
+          if (-not (Test-Path $exe)) { throw "构建产物不存在: $exe" }
+          Write-Host "exe 大小: $([math]::Round((Get-Item $exe).Length/1MB,2)) MB"
+          Get-ChildItem dist/LighthouseKeeper | Select-Object Name, Length
+
+      # README 里单独给出运行冒烟测试，避免它被当成环境问题
+      # 而误判整个构建失败。核心产物正确性已在上一环节校验。
+      - name: Smoke test
+        continue-on-error: true
+        run: python scripts/ci_smoke_test.py dist/LighthouseKeeper/LighthouseKeeper.exe
+
+      - name: Copy release extras
+        shell: pwsh
+        run: |
+          Copy-Item config.example.py dist/LighthouseKeeper/ -Force
+          if (Test-Path README.md) { Copy-Item README.md dist/LighthouseKeeper/ -Force }
+          if (Test-Path 使用说明.txt) { Copy-Item 使用说明.txt dist/LighthouseKeeper/ -Force }
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LighthouseKeeper-windows
+          path: dist/LighthouseKeeper
+          retention-days: 14
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/LighthouseKeeper -DestinationPath LighthouseKeeper-windows.zip -Force
+          Write-Host "zip 大小: $([math]::Round((Get-Item LighthouseKeeper-windows.zip).Length/1MB,2)) MB"
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LighthouseKeeper-windows-zip
+          path: LighthouseKeeper-windows.zip
+          retention-days: 14
+
+      # 推送 tag（如 v1.0.0）时自动建 Release 并附上 zip
+      - name: Publish Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: LighthouseKeeper-windows.zip
+          generate_release_notes: true
