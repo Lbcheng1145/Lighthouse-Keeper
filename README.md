@@ -51,6 +51,38 @@ LighthouseKeeper.exe --version
 *   **免安装分发**：可打包为单个文件夹的 Windows 程序，目标机器无需 Python。
 *   **调用本机浏览器**：不内置 Chromium，直接使用系统中的 Edge / Chrome。
 *   **多模式支持**：测试模式（4核4G3M 109 元常售档）与生产模式（38/39 元秒杀档）。
+*   **图形界面（试验分支）**：`feature/gui` 分支额外提供窗口版，并可打包成**单个 exe**。
+
+---
+
+## 🖼 图形界面（试验分支 `feature/gui`）
+
+> 只在 `feature/gui` 分支上，`main` 的正式发布不受影响。
+
+窗口里能做的事：
+
+*   选模式（测试 109 元 / 正式 38-39 元）、改目标规格、带宽、价格、抢购时间、活动页地址
+*   按钮：**开始抢购 / 停止 / 保存配置 / 打开活动页 / 打开日志目录**
+*   运行日志实时显示在窗口里，停止按钮能真正中断倒计时等待
+*   配置改动会写进 exe 同目录的 `config.local.py`，命令行模式共用同一份
+
+两种用法都保留：
+
+```bash
+LighthouseKeeper.exe            # 双击 → 打开窗口（默认）
+LighthouseKeeper.exe --cli      # 无界面，行为与原来一致
+LighthouseKeeper.exe --version  # 只看版本
+LighthouseKeeper.exe --self-check  # 打包自检：浏览器驱动能否启动（不碰账号、不下单）
+```
+
+单文件版构建（产物 `dist-gui/LighthouseKeeper.exe`，约 49 MB）：
+
+```bash
+pyinstaller LighthouseKeeperGUI.spec --noconfirm --distpath dist-gui --workpath build-gui
+```
+
+注意：单文件每次启动要把内容解压到临时目录，**首次启动会慢几秒**；
+因为是无签名的新 exe，个别杀毒软件可能提示，属正常现象。
 
 ---
 

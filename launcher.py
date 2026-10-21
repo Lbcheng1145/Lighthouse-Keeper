@@ -107,10 +107,21 @@ def _self_check() -> int:
             print(report, file=sys.stderr)
         except Exception:
             pass
-    try:
-        (_base_dir() / "self-check.log").write_text(report, encoding="utf-8")
-    except Exception:
-        pass
+
+    # 报告落盘：优先 exe 同目录；某些目录（受控文件夹访问/OneDrive 等）
+    # 会拒绝新建文件，这时退到临时目录，并把失败原因写进报告本身。
+    import tempfile
+
+    errors = []
+    for target in (
+        _base_dir() / "self-check.log",
+        Path(tempfile.gettempdir()) / "lighthouse-self-check.log",
+    ):
+        try:
+            target.write_text(report + "".join(errors), encoding="utf-8")
+            break
+        except Exception as exc:
+            errors.append(f"[warn] 写入 {target} 失败: {exc}\n")
     return 0 if ok else 1
 
 

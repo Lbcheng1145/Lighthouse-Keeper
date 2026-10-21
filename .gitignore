@@ -46,3 +46,7 @@ config.local.py
 dist-gui/
 build-gui/
 self-check.log
+dist-debug/
+build-debug/
+LighthouseKeeperGUI-debug.spec
+self-check.log
