@@ -158,6 +158,7 @@ python main.py
 | `LighthouseKeeper.spec` | PyInstaller 打包配置 |
 | `scripts/ci_smoke_test.py` | CI 冒烟测试，验证打包产物能否启动 |
 | `scripts/test_product_matcher.py` | 选品判据回归测试（价格文案 / 按钮识别），CI 会执行 |
+| `scripts/test_purchase_flow.py` | 购买流程回归测试（点击次数 / 提交范围 / 重试开关），CI 会执行 |
 | `.github/workflows/build.yml` | GitHub Actions 自动构建 |
 
 运行时生成（**已 gitignore，含凭据，请勿提交**）：
@@ -263,7 +264,24 @@ A: 选品是「规格 + 价格 + 规格细节」三重校验，三者必须同�
 改完配置建议先用测试模式跑一次，确认日志里 `✅ 锁定商品（得分 …）` 那一行
 打印的规格与价格正是你要的那一档。
 
-**Q: 双击 exe 后窗口一闪而过？**
+**Q: 会不会重复下单 / 一次买两个商品？**
+
+A: 不会。购买链路上做了三层防重复：
+
+*   **只点一次**：点击购买按钮后不会因为「没弹出新标签页」而重点，
+    页内弹窗不会产生新标签页，早期版本因此在同一按钮上点了两次。
+*   **提交只在弹窗内**：提交订单只认配置弹窗里的按钮。早期版本把页面级
+    `立即购买` 也当候选，而活动页每张卡都有这个按钮，于是会买到别的商品。
+*   **默认不自动重试**：点完看不到配置弹窗时，默认记录错误并停下，
+    不再「重新定位商品再点一次」。确认点击确实无效时，可在
+    `config.local.py` 里把 `RUN_MODE["allow_retry_purchase"]` 设为 `True`。
+
+**Q: 测试模式会不会抢成正式商品？**
+
+A: 不会。测试模式的价格是分层的：先用 `test_price`（79）定位，只有页面上
+确实没有这一档时，才会降级用 `test_prices_fallback`。
+
+
 
 A: 在 PowerShell 中进入该目录执行 `.\LighthouseKeeper.exe`，即可看到完整报错。
 

@@ -176,14 +176,13 @@ class TencentCloudBot:
 
                 # 抢购时刻只「定位」不点击：点击统一交给 purchase_flow.execute，
                 # 否则同一个按钮会被点两次（可能开两个标签页、下两个单）。
-                target_prices = self._get_target_prices()
                 pre_button = buy_button  # 赛前锁定的句柄，刷新后可能已失效
-                success, buy_button = finder.find_and_click(target_prices, click=False)
+                success, buy_button = self._find_target(finder, click=False)
 
                 if not success or buy_button is None:
                     log("抢购时刻未定位到可购买按钮，稍后重试一次...", "WARNING")
                     self.page.wait_for_timeout(300)
-                    success, buy_button = finder.find_and_click(target_prices, click=False)
+                    success, buy_button = self._find_target(finder, click=False)
 
                 if not success or buy_button is None:
                     # 兜底必须用赛前锁定的旧句柄，而不是刚返回的空值
@@ -243,9 +242,7 @@ class TencentCloudBot:
         target_prices = self._get_target_prices()
         # 查找但不点击 (click=False)；开抢前按钮可能还是「添加提醒」，
         # 此时只要求锁定卡片位置，不要求此刻可购买。
-        success, button = finder.find_and_click(
-            target_prices, click=False, require_buyable=False
-        )
+        success, button = self._find_target(finder, click=False, require_buyable=False)
         
         if success and button:
             log("已锁定目标商品！", "SUCCESS")
@@ -418,8 +415,8 @@ class TencentCloudBot:
                     # 但在这里我们直接调用finder逻辑即可，简单点
                     finder.prepare_page(self.config["page"]["tabs"], self.config["page"]["scroll_times"])
                     target_prices = self._get_target_prices()
-                    success, button = finder.find_and_click(
-                        target_prices, click=False, require_buyable=False
+                    success, button = self._find_target(
+                        finder, click=False, require_buyable=False
                     )
                     
                     if success and button:
@@ -467,9 +464,8 @@ class TencentCloudBot:
             self.config["page"]["scroll_times"]
         )
         
-        # 2. 查找商品
-        target_prices = self._get_target_prices()
-        success, buy_button = finder.find_and_click(target_prices)
+        # 2. 查找商品（只定位，点击交给 execute，避免点两次）
+        success, buy_button = self._find_target(finder, click=False)
         
         if not success:
             return False
@@ -491,6 +487,32 @@ class TencentCloudBot:
             return prices
         else:
             return self.config["target"]["prod_prices"]
+
+    def _get_target_price_tiers(self):
+        """按优先级分组返回目标价格。
+
+        测试模式的 fallback 价格（38/39/180）原本与 79 混在同一个列表里，
+        页面上没有 79 元档时就会去抢 38 元档 —— 测试模式本意只是验证流程，
+        却可能买成正式商品。改为分层：先用 79 找，确实找不到才降级。
+        """
+        target = self.config["target"]
+        if self.config["run_mode"]["test_mode"]:
+            tiers = [[target.get("test_price", "79")]]
+            fallback = target.get("test_prices_fallback") or []
+            if fallback:
+                tiers.append(list(fallback))
+            return tiers
+        return [list(target["prod_prices"])]
+
+    def _find_target(self, finder, click=False, require_buyable=True):
+        """按价格分组依次尝试定位，返回 (success, element)。"""
+        result = (False, None)
+        for tier in self._get_target_price_tiers():
+            log(f"按价格分组定位: {tier}", "DEBUG")
+            result = finder.find_and_click(tier, click=click, require_buyable=require_buyable)
+            if result[0]:
+                return result
+        return result
     
     def _keep_browser_open(self):
         """保持浏览器打开"""

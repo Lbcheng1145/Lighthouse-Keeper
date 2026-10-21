@@ -11,6 +11,9 @@ RUN_MODE = {
     "test_mode": False,           # True = 抢 79 元测试套餐；False = 抢正式套餐
     "monitor_mode": False,
     "buy_times": ["10:00:00", "15:00:00"],  # 秒杀时间点（本地时间）
+    # 点击购买后没看到配置弹窗时，是否允许重新定位再点一次。
+    # 默认 False（防止重复下单 / 买到别的商品）。
+    "allow_retry_purchase": False,
 }
 
 # 目标商品

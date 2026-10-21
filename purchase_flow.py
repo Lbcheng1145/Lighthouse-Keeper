@@ -19,95 +19,124 @@ class PurchaseFlow:
     def execute(self, buy_button):
         """
         执行购买流程
-        
+
         Args:
             buy_button: 购买按钮元素
-            
+
         Returns:
             bool: 成功返回True
         """
         old_url = self.page.url
-        
-        # 1. 点击购买按钮（这会触发弹窗或登录）
-        page = self._click_buy_button(buy_button)
-        
+
+        # 1. 点击购买按钮（这会触发弹窗或登录）。只会点一次。
+        opened_page = self._click_buy_button(buy_button)
+
+        # 购买页可能在新标签页里打开：必须真正切换过去。
+        # 早期版本拿到 new_page 却没用，后续弹窗检测全作用在活动页上，
+        # 看不到弹窗 → 误判「没点成功」→ 重试 → 又下一单。
+        if opened_page is not None:
+            self.page = opened_page
+            self.login_handler.page = opened_page
+            log("后续流程切换到新标签页", "INFO")
+
         # 2. 处理登录
         # 注意：如果是配置弹窗模式，登录也会在弹窗之上覆盖一层，处理完登录后，配置弹窗应该还在下面
         login_success = self.login_handler.handle_login_flow(old_url)
-        
+
         if not login_success:
             log("登录处理可能未完成，尝试继续操作...", "WARNING")
-            
+
         # 3. 检查状态
-        # 优先检查弹窗是否存在（使用更通用的选择器）
-        # 只要有 uno3-dialog，就说明弹窗成功了，不需要重试
-        has_dialog = False
-        try:
-            if self.page.locator('.uno3-dialog').first.is_visible(timeout=3000):
-                has_dialog = True
-                log("检测到配置弹窗 (.uno3-dialog)，准备选择镜像", "INFO")
-        except:
-            pass
-            
-        if has_dialog:
+        if self._wait_for_dialog(5000):
+            log("检测到配置弹窗 (.uno3-dialog)，准备选择镜像", "INFO")
             return self._select_image()
-            
+
         # 如果没有弹窗，再检查是否还在活动页
         current_url = self.page.url
         log(f"当前URL: {current_url}", "DEBUG")
-        
-        # 只有在明确没有弹窗，且还在活动页的情况下，才考虑重试
-        # 这里的判断要非常谨慎，防止误判导致重复下单
+
         if self._is_activity_page(current_url):
-            # 双重检查：再次确认真的没有弹窗吗？
+            # 二次检测：有些页面弹窗出现得慢
             try:
                 if self.page.get_by_text("镜像", exact=False).first.is_visible(timeout=1000):
                     log("二次检测发现弹窗，继续流程", "INFO")
                     return self._select_image()
-            except:
+            except Exception:
                 pass
-                
-            log("未检测到配置弹窗且仍在活动页，尝试重新定位商品", "WARNING")
+
+            # 重复下单的代价远高于漏单：默认不再自动重试点击购买。
+            if not self.config.get("allow_retry_purchase", False):
+                log(
+                    "未检测到配置弹窗且仍在活动页。为避免重复下单，默认不自动重试；"
+                    "如确认点击确实无效，可把 allow_retry_purchase 设为 True",
+                    "ERROR",
+                )
+                return False
+
+            log("未检测到配置弹窗且仍在活动页，按配置重新定位商品", "WARNING")
             return self._retry_purchase()
-        
+
         # 如果URL变了，也继续
         return self._select_image()
-    
+
+    def _wait_for_dialog(self, timeout_ms):
+        """轮询等待配置弹窗出现。"""
+        waited = 0
+        while waited < timeout_ms:
+            try:
+                if self.page.locator('.uno3-dialog').first.is_visible(timeout=300):
+                    return True
+            except Exception:
+                pass
+            self.page.wait_for_timeout(300)
+            waited += 300
+        return False
+
     def _click_buy_button(self, button):
-        """
-        点击购买按钮，处理可能的新标签页
-        
+        """点击购买按钮，且只点一次。
+
+        早期实现把点击包在 expect_popup 里：页内弹窗不会产生新标签页，
+        expect_popup 超时抛异常后代码又点了一次 —— 同一个按钮被点两次，
+        于是下两单。现在把「点击」与「是否开了新标签」解耦：先点一次，
+        再轮询 context.pages 判断有没有新标签。
+
         Returns:
-            page object
+            新标签页 page，或 None（没有新标签页）
         """
         log("点击购买按钮...", "INFO")
-        
         try:
-            # 尝试检测新标签页
-            with self.page.expect_popup(timeout=3000) as popup_info:
-                # 使用 force=True 强制点击，防止被登录弹窗遮挡导致的点击超时
-                button.click(force=True)
-            new_page = popup_info.value
-            log("检测到新标签页，已切换", "DEBUG")
-            return new_page
-        except Exception as e:
-            # 检查是否是因为被遮挡（通常是登录弹窗）
-            error_str = str(e).lower()
-            if "intercepts pointer events" in error_str:
+            context = self.page.context
+        except Exception:
+            context = None
+        pages_before = len(context.pages) if context is not None else 0
+
+        try:
+            # 使用 force=True 强制点击，防止被登录弹窗遮挡导致的点击超时
+            button.click(force=True)
+        except Exception as exc:
+            text = str(exc).lower()
+            if "intercepts pointer events" in text:
                 log("点击被遮挡（可能是登录弹窗），继续处理登录流程", "WARNING")
-                return self.page
-                
-            # 如果没有新标签页，但点击可能已被触发
-            try:
-                # 如果按钮还可见，再次尝试轻触
-                if button.is_visible(timeout=500):
-                    button.click(force=True, timeout=1000)
-            except:
-                pass
-                
-            self.page.wait_for_timeout(2000)
-            log("在当前页面继续", "DEBUG")
-            return self.page
+            else:
+                log(f"点击购买按钮异常: {exc}", "WARNING")
+            # 这里不重试：点击可能已经生效，重试会把「可能一单」变成「确定两单」。
+            return None
+
+        # 轮询新标签页（最多约 3 秒）
+        if context is not None:
+            for _ in range(15):
+                if len(context.pages) > pages_before:
+                    new_page = context.pages[-1]
+                    try:
+                        new_page.wait_for_load_state('domcontentloaded')
+                    except Exception:
+                        pass
+                    log(f"检测到新标签页: {new_page.url}", "INFO")
+                    return new_page
+                self.page.wait_for_timeout(200)
+
+        log("未检测到新标签页，按页内弹窗继续", "DEBUG")
+        return None
     
     def _is_activity_page(self, url):
         """判断是否是活动页"""
@@ -184,101 +213,127 @@ class PurchaseFlow:
         # 2. 同意协议并提交
         return self._submit_order()
 
+    # 提交按钮文案：只认明确的提交动作
+    SUBMIT_TEXTS = ("立即购买", "确认购买", "立即抢购", "提交订单", "确认下单", "确定")
+
     def _submit_order(self):
-        """提交订单"""
+        """提交订单。
+
+        只允许在「配置弹窗」范围内点提交按钮。
+        早期实现把页面级 `button:has-text("立即购买")` 也放进候选选择器，
+        而活动页上每张商品卡都有这个按钮 —— 于是会点到别的商品；外层还有
+        10 次重试，实测表现为「同时下单两个商品」。
+        """
         log("提交订单...", "INFO")
-        
+        start_url = self.page.url
+
+        for attempt in range(2):
+            scope = self._find_dialog_scope()
+            if scope is None:
+                if self._is_activity_page(self.page.url):
+                    log(
+                        "仍在活动页且找不到配置弹窗：拒绝点击页面级购买按钮"
+                        "（那会买到页面上的其它商品），请人工确认",
+                        "ERROR",
+                    )
+                    return False
+                log("未找到配置弹窗，改为在非活动页查找提交按钮", "WARNING")
+                scope = self.page
+
+            btn = self._find_submit_button(scope)
+            if btn is None:
+                log(f"第 {attempt + 1} 次尝试：未找到提交按钮", "WARNING")
+                continue
+
+            try:
+                btn.highlight()
+            except Exception:
+                pass
+
+            try:
+                btn_text = (btn.inner_text() or "").strip().replace("\n", " ")
+            except Exception:
+                btn_text = "(未知)"
+
+            try:
+                btn.click(force=True)
+                log(f"已点击提交按钮: {btn_text}", "INFO")
+            except Exception as exc:
+                log(f"点击提交按钮失败: {exc}", "WARNING")
+                continue
+
+            if self._wait_submitted(start_url):
+                return True
+
+        log("未确认提交成功，请人工点击（不再自动重复点击，避免重复下单）", "WARNING")
+        return False
+
+    def _find_dialog_scope(self):
+        """返回可见的配置弹窗；没有则返回 None。"""
         try:
-            # 针对 Uno Design 弹窗的专门处理
-            # 结构通常是: .uno3-dialog >> .uno3-dialog-footer >> button
-            
-            # 1. 尝试在弹窗Footer中查找按钮 (这是最准确的)
-            footer_btn_selectors = [
-                '.uno3-dialog-footer button:has-text("立即购买")',
-                '.uno3-dialog-footer button:has-text("确认购买")',
-                '.uno3-dialog-footer button:has-text("立即抢购")',  # 新增
-                '.uno3-dialog-footer button:has-text("确定")',
-                '.uno3-dialog-footer .buy-button'
-            ]
-            
-            # 2. 常规按钮选择器 (作为备选)
-            fallback_selectors = [
-                'button:has-text("立即购买")',
-                'button:has-text("确认购买")',
-                'button:has-text("立即抢购")',  # 新增
-                'button:has-text("提交订单")',
-                '[data-action="buy"]'
-            ]
-            
-            # 合并选择器，优先查弹窗里的
-            all_selectors = footer_btn_selectors + fallback_selectors
-            
-            # 获取当前URL用于检测跳转
-            start_url = self.page.url
-            
-            for attempt in range(10):  # 增加尝试次数到10次
-                log(f"尝试点击提交按钮 (第{attempt+1}次)...", "INFO")
-                
-                # 遍历查找按钮
-                btn_clicked = False
-                for btn_selector in all_selectors:
-                    try:
-                        # 查找所有匹配的按钮
-                        # 注意：可能有多个弹窗（隐藏的），我们要找可见的那个
-                        btns = self.page.locator(btn_selector).all()
-                        for btn in btns:
-                            if btn.is_visible(timeout=200):
-                                # 再次确认它是否在弹窗里（可选）
-                                # log(f"找到可见按钮: {btn_selector}", "DEBUG")
-                                
-                                # 高亮按钮方便观察
-                                try:
-                                    btn.highlight()
-                                except:
-                                    pass
-                                    
-                                btn.click(force=True)
-                                log(f"点击了按钮: {btn_selector}", "DEBUG")
-                                btn_clicked = True
-                                break # 找到一个点完就退出内层循环
-                        if btn_clicked:
-                            break
-                    except:
-                        pass
-                
-                if not btn_clicked:
-                    # 如果常规方法找不到，尝试在当前活动的 dialog 中找所有 button
-                    try:
-                        dialog = self.page.locator('.uno3-dialog').filter(has_text="立即购买").first
-                        if dialog.is_visible():
-                            btn = dialog.locator('button').filter(has_text="立即购买").first
-                            if btn.is_visible():
-                                btn.click(force=True)
-                                log("通过Dialog上下文点击了按钮", "DEBUG")
-                                btn_clicked = True
-                    except:
-                        pass
-                
-                if not btn_clicked:
-                     log("未找到提交按钮，尝试按 Enter 键...", "WARNING")
-                     self.page.keyboard.press("Enter")
-                
-                # 等待跳转
+            dialog = self.page.locator('.uno3-dialog').first
+            if dialog.is_visible(timeout=1500):
+                return dialog
+        except Exception:
+            pass
+        return None
+
+    def _find_submit_button(self, scope):
+        """在给定范围内查找可点击的提交按钮（跳过禁用态）。"""
+        for text in self.SUBMIT_TEXTS:
+            try:
+                candidates = scope.locator(f'button:has-text("{text}")').all()
+            except Exception:
+                continue
+            for cand in candidates:
                 try:
-                    # 等待URL变化或出现支付相关元素
-                    self.page.wait_for_timeout(500) 
-                    if self.page.url != start_url or "pay" in self.page.url:
-                        log("检测到页面跳转，提交成功！", "SUCCESS")
-                        return True
-                except:
-                    pass
-            
-            log("多次点击后页面未跳转，请手动点击！", "WARNING")
-            return True
-            
-        except Exception as e:
-            log(f"提交订单异常: {e}", "ERROR")
+                    if not cand.is_visible(timeout=200):
+                        continue
+                    if self._looks_disabled(cand):
+                        continue
+                    return cand
+                except Exception:
+                    continue
+
+        # 兜底：弹窗底部按钮（只限弹窗内，绝不退回整页）
+        try:
+            for cand in scope.locator('.uno3-dialog-footer button').all():
+                if cand.is_visible(timeout=200) and not self._looks_disabled(cand):
+                    return cand
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _looks_disabled(el):
+        """按钮是否处于禁用态（禁用态再点也无效，还会让重试逻辑误判）。"""
+        try:
+            if el.is_disabled():
+                return True
+            cls = (el.get_attribute('class') or '').lower()
+            return any(k in cls for k in ("disabled", "is-disabled"))
+        except Exception:
             return False
+
+    def _wait_submitted(self, start_url, timeout_ms=3000):
+        """确认订单是否已提交：URL 变化，或配置弹窗关闭。"""
+        waited = 0
+        while waited < timeout_ms:
+            self.page.wait_for_timeout(300)
+            waited += 300
+            try:
+                if self.page.url != start_url:
+                    log(f"检测到页面跳转，提交成功: {self.page.url}", "SUCCESS")
+                    return True
+            except Exception:
+                return True
+            try:
+                if not self.page.locator('.uno3-dialog').first.is_visible(timeout=200):
+                    log("配置弹窗已关闭，判定提交成功", "SUCCESS")
+                    return True
+            except Exception:
+                pass
+        return False
     
     def _get_target_prices(self):
         """获取目标价格列表"""
