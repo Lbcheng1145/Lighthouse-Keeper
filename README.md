@@ -1,5 +1,12 @@
 # 腾讯云轻量服务器自动抢购脚本 (Playwright 版)
 
+当前版本：v1.0.3 —— 版本号只在 `config.py` 的 `VERSION` 维护一处，
+启动横幅、`--version`、exe 文件属性都由它派生。确认手上的包是哪一版：
+
+```bash
+LighthouseKeeper.exe --version
+```
+
 基于 Python 和 Playwright 的自动化脚本，用于抢购腾讯云活动页面的轻量应用服务器
 （如 38 元/年 4核4G 套餐）。
 
@@ -176,7 +183,17 @@ python main.py
 推送到 `main`、发起 PR，或推送 `v*` 标签时，GitHub Actions 会自动构建：
 
 *   在 **Actions** 页面下载 `LighthouseKeeper-windows` 产物；
-*   推送形如 `v1.0.0` 的标签会自动创建 Release 并附带 zip。
+*   推送形如 `v1.0.3` 的标签会自动创建 Release 并附带 zip。
+
+### 发版流程（版本号只有一处）
+
+1.  改 `config.py` 里的 `VERSION`（如 `1.0.4`）；
+2.  提交并推送 `main`；
+3.  打同名标签并推送：`git tag -a v1.0.4 -m "v1.0.4" && git push fork v1.0.4`；
+4.  CI 构建完成后自动发布 Release，zip 里的 exe 属性版本与 tag 一致。
+
+版本一致性由 `scripts/test_version.py` 在 CI 中守护（横幅/`--version`/
+打包脚本都必须读同一个 `VERSION`）。
 
 ### 本地构建
 

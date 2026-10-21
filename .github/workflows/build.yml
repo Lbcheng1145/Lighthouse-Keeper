@@ -33,11 +33,12 @@ jobs:
       - name: Compile check
         run: python -m compileall -q .
 
-      # 回归测试：选品判据 + 购买流程（防止选错商品 / 重复下单）
+      # 回归测试：选品判据 + 购买流程 + 版本号一致性
       - name: Regression tests
         run: |
           python scripts/test_product_matcher.py
           python scripts/test_purchase_flow.py
+          python scripts/test_version.py
 
       - name: Build with PyInstaller
         run: pyinstaller LighthouseKeeper.spec --noconfirm
@@ -48,6 +49,19 @@ jobs:
           $exe = "dist/LighthouseKeeper/LighthouseKeeper.exe"
           if (-not (Test-Path $exe)) { throw "构建产物不存在: $exe" }
           Write-Host "exe 大小: $([math]::Round((Get-Item $exe).Length/1MB,2)) MB"
+
+          # 版本号自检：exe 自己报的版本必须与 tag 一致
+          $reported = (& $exe --version | Out-String).Trim()
+          Write-Host "exe 版本: $reported"
+          if ($reported -notmatch 'v\d+\.\d+\.\d+') { throw "exe --version 输出异常: $reported" }
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $tagVer = $env:GITHUB_REF -replace '^refs/tags/v', ''
+            if ($reported -notmatch [regex]::Escape($tagVer)) {
+              throw "exe 版本($reported) 与 tag v$tagVer 不一致"
+            }
+            Write-Host "版本与 tag 一致: v$tagVer"
+          }
+
           Get-ChildItem dist/LighthouseKeeper | Select-Object Name, Length
 
       # README 里单独给出运行冒烟测试，避免它被当成环境问题

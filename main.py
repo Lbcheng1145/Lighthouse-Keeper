@@ -1,6 +1,6 @@
 """
 腾讯云轻量服务器自动抢购脚本 - 主程序
-重构版本 v2.0
+版本号见 config.VERSION（启动横幅与 --version 都读它）
 """
 import sys
 import io
@@ -288,7 +288,7 @@ class TencentCloudBot:
     def _print_banner(self):
         """打印启动信息"""
         print("="*60)
-        print("🚀 腾讯云轻量服务器自动抢购脚本 v2.0")
+        print(f"🚀 腾讯云轻量服务器自动抢购脚本 v{VERSION}")
         
         if self.config["run_mode"]["test_mode"]:
             price = self.config["target"]["test_price"]
@@ -600,6 +600,11 @@ class TencentCloudBot:
 
 def main():
     """主函数"""
+    # --version / -V：只打印版本号，不启动浏览器（便于确认手上的包是哪个版本）
+    if any(arg in ("--version", "-V", "-v") for arg in sys.argv[1:]):
+        print(f"LighthouseKeeper v{VERSION}")
+        return
+
     try:
         bot = TencentCloudBot()
         bot.run()
