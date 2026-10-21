@@ -18,9 +18,17 @@ from pathlib import Path
 from tkinter import messagebox, scrolledtext, ttk
 
 import config
+import payment
 from config import VERSION
 from logger import get_log_file
 from main import TencentCloudBot
+
+try:  # Pillow 是可选的：有就缩放得更细腻，没有就用 tkinter 自带的 subsample
+    from PIL import Image, ImageTk
+
+    _HAS_IMAGETK = True
+except Exception:  # pragma: no cover - 取决于运行环境
+    _HAS_IMAGETK = False
 
 # 日志级别 -> 窗口里文字标签的颜色
 LEVEL_TAGS = {
@@ -71,8 +79,8 @@ class BotApp:
         self.queue = queue.Queue()
 
         root.title(f"腾讯云轻量服务器抢购 v{VERSION}")
-        root.geometry("860x620")
-        root.minsize(760, 520)
+        root.geometry("990x720")
+        root.minsize(900, 640)
 
         self._build_ui()
         self._load_config_into_ui()
@@ -157,6 +165,13 @@ class BotApp:
             variable=self.retry_var,
         ).grid(row=5, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
+        self.hide_window_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            cfg,
+            text="不显示浏览器窗口（窗口移到屏幕外运行，支付二维码会显示在右侧）",
+            variable=self.hide_window_var,
+        ).grid(row=6, column=0, columnspan=4, sticky="w", pady=(2, 0))
+
         bar = ttk.Frame(self.root, padding=(12, 0))
         bar.pack(fill="x")
         self.start_btn = ttk.Button(bar, text="开始抢购", command=self.start)
@@ -167,12 +182,31 @@ class BotApp:
         ttk.Button(bar, text="打开活动页", command=self.open_page).pack(side="left", padx=6)
         ttk.Button(bar, text="打开日志目录", command=self.open_logs).pack(side="left")
 
-        logf = ttk.LabelFrame(self.root, text=" 运行日志 ", padding=6)
-        logf.pack(fill="both", expand=True, padx=12, pady=(8, 12))
+        body = ttk.Frame(self.root, padding=(12, 0, 12, 12))
+        body.pack(fill="both", expand=True, pady=(8, 0))
+
+        logf = ttk.LabelFrame(body, text=" 运行日志 ", padding=6)
+        logf.pack(side="left", fill="both", expand=True)
         self.log_widget = scrolledtext.ScrolledText(
             logf, height=16, wrap="word", font=("Consolas", 9), state="disabled"
         )
         self.log_widget.pack(fill="both", expand=True)
+
+        qrf = ttk.LabelFrame(body, text=" 二维码 ", padding=6)
+        self.qrf = qrf
+        qrf.pack(side="right", fill="y", padx=(8, 0))
+        self.qr_status = tk.StringVar(value="提交订单后自动提取到这里")
+        self.qr_label = ttk.Label(
+            qrf, textvariable=self.qr_status, anchor="center", justify="center",
+            width=30, relief="solid", borderwidth=1,
+        )
+        self.qr_label.pack(fill="both", expand=True)
+        self.qr_path = None
+        self._qr_photo = None
+        qrbar = ttk.Frame(qrf)
+        qrbar.pack(fill="x", pady=(6, 0))
+        ttk.Button(qrbar, text="打开图片", command=self.open_qr).pack(side="left")
+        ttk.Button(qrbar, text="打开目录", command=self.open_qr_dir).pack(side="left", padx=4)
         self.log_widget.tag_configure("info", foreground="#222")
         self.log_widget.tag_configure("debug", foreground="#888")
         self.log_widget.tag_configure("warn", foreground="#b26b00")
@@ -191,6 +225,7 @@ class BotApp:
         self.buy_times_var.set(", ".join(run_mode.get("buy_times", ["10:00:00", "15:00:00"])))
         self.url_var.set(config.PAGE_CONFIG.get("url", ""))
         self.retry_var.set(bool(run_mode.get("allow_retry_purchase", False)))
+        self.hide_window_var.set(bool(config.BROWSER_CONFIG.get("hide_window", True)))
         self._on_mode_change()
 
     def _on_mode_change(self):
@@ -213,6 +248,7 @@ class BotApp:
             "buy_times": times,
             "url": self.url_var.get().strip(),
             "allow_retry_purchase": bool(self.retry_var.get()),
+            "hide_window": bool(self.hide_window_var.get()),
         }
 
     def _apply_to_runtime(self, values: dict):
@@ -224,6 +260,7 @@ class BotApp:
         config.RUN_MODE["test_mode"] = values["test_mode"]
         config.RUN_MODE["buy_times"] = values["buy_times"]
         config.RUN_MODE["allow_retry_purchase"] = values["allow_retry_purchase"]
+        config.BROWSER_CONFIG["hide_window"] = values["hide_window"]
         if values["url"]:
             config.PAGE_CONFIG["url"] = values["url"]
 
@@ -245,6 +282,8 @@ class BotApp:
         page = dict(config.PAGE_CONFIG)
         if values["url"]:
             page["url"] = values["url"]
+        browser = dict(config.BROWSER_CONFIG)
+        browser["hide_window"] = values["hide_window"]
 
         path = _app_dir() / "config.local.py"
         path.write_text(
@@ -252,7 +291,8 @@ class BotApp:
             "# 只改了这里列出的项，其余仍用程序内置默认值。\n"
             f"TARGET_CONFIG = {target!r}\n\n"
             f"RUN_MODE = {run_mode!r}\n\n"
-            f"PAGE_CONFIG = {page!r}\n",
+            f"PAGE_CONFIG = {page!r}\n\n"
+            f"BROWSER_CONFIG = {browser!r}\n",
             encoding="utf-8",
         )
         return path
@@ -329,6 +369,61 @@ class BotApp:
         except Exception as exc:
             messagebox.showinfo("日志目录", f"{folder}\n\n无法自动打开：{exc}")
 
+    # ---------------- 二维码 ----------------
+    def _show_qr(self, path: str, kind: str = "支付"):
+        """把提取到的二维码显示在右侧面板。"""
+        try:
+            from PIL import Image  # 有 Pillow 就缩放，没有也没关系
+
+            has_pil = True
+        except Exception:
+            has_pil = False
+
+        try:
+            if has_pil:
+                img = Image.open(path)
+                img.thumbnail((320, 320))
+                self._qr_photo = ImageTk.PhotoImage(img) if _HAS_IMAGETK else None
+                if self._qr_photo is None:
+                    raise RuntimeError("no ImageTk")
+            else:
+                raise RuntimeError("no PIL")
+        except Exception:
+            # 退回到 tkinter 自带 PNG 支持（Tk 8.6+），按尺寸 subsample 缩放
+            try:
+                photo = tk.PhotoImage(file=path)
+                factor = max(1, (max(photo.width(), photo.height()) + 319) // 320)
+                self._qr_photo = photo.subsample(factor, factor) if factor > 1 else photo
+            except Exception as exc:
+                self.qr_status.set("二维码已保存，但无法预览: " + str(exc))
+                self.qr_path = path
+                self._append(f"二维码文件: {path}", "warn")
+                return
+
+        self.qr_path = path
+        self.qr_label.configure(image=self._qr_photo, text="")
+        self.qrf.configure(text=f" {kind}二维码 ")
+        self._append(f"{kind}二维码已显示: {path}", "success")
+
+    def open_qr(self):
+        if not self.qr_path:
+            messagebox.showinfo("支付二维码", "还没有提取到二维码")
+            return
+        try:
+            os.startfile(self.qr_path)  # noqa: S606
+        except Exception as exc:
+            messagebox.showinfo("支付二维码", f"{self.qr_path}\n\n无法打开：{exc}")
+
+    def open_qr_dir(self):
+        folder = payment.resolve_dir(
+            (config.PAYMENT_CONFIG or {}).get("qr_dir", "qrcodes")
+        )
+        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            os.startfile(folder)  # noqa: S606
+        except Exception as exc:
+            messagebox.showinfo("二维码目录", f"{folder}\n\n无法打开：{exc}")
+
     # ---------------- 日志搬砖 ----------------
     def _pump_logs(self):
         while True:
@@ -347,6 +442,10 @@ class BotApp:
             else:
                 tag = LEVEL_TAGS.get(level, "info")
             self._append(msg, tag)
+            for marker in ("支付二维码: ", "登录二维码: "):
+                if marker in msg:
+                    self._show_qr(msg.split(marker, 1)[1].strip(), kind=marker[:2])
+                    break
         self.root.after(120, self._pump_logs)
 
     def _append(self, text: str, tag: str = "info"):

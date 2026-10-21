@@ -49,3 +49,6 @@ dist-debug/
 build-debug/
 LighthouseKeeperGUI-debug.spec
 self-check.log
+
+# 运行时提取的支付/登录二维码（含订单信息，禁止提交）
+qrcodes/

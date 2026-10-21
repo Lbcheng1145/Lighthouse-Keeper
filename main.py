@@ -136,6 +136,7 @@ class TencentCloudBot:
             "timeout": TIMEOUT_CONFIG,
             "images": IMAGE_OPTIONS,
             "browser": BROWSER_CONFIG,
+            "payment": PAYMENT_CONFIG,
         }
         self.browser = None
         self.context = None
@@ -164,7 +165,7 @@ class TencentCloudBot:
             self._open_page()
             
             # 初始化工具
-            finder = ProductFinder(self.page, self.config["target"], self.config["timeout"])
+            finder = ProductFinder(self.page, self._target_config_for_mode(), self.config["timeout"])
             self.purchase_flow = PurchaseFlow(self.page, self.config, self.config["timeout"])
             
             # 1. 确保登录
@@ -334,14 +335,32 @@ class TencentCloudBot:
         profile_dir = _resolve_profile_dir(browser_cfg)
         state_file = _resolve_state_file(browser_cfg)
 
+        hide_window = bool(browser_cfg.get("hide_window", False))
+        headless = bool(browser_cfg.get("headless", False))
+        window_position = browser_cfg.get("window_position", "-3200,-3200")
+        window_size = browser_cfg.get("window_size", "1400,1000")
+
         launch_args = [
-            '--start-maximized',
             '--no-sandbox',
             '--disable-dev-shm-usage',
             '--disable-gpu',
             '--disable-extensions',
             '--disable-session-crashed-bubble',
         ]
+        if hide_window:
+            # 关键：不是 headless，而是把窗口挪到屏幕外。活动页对无头浏览器
+            # 有反爬（实测只返回 1 KB 挑战页），离屏窗口则和正常浏览器一致。
+            launch_args += [
+                f'--window-position={window_position}',
+                f'--window-size={window_size}',
+                '--disable-features=CalculateNativeWinOcclusion',
+            ]
+            log("离屏模式：浏览器窗口移到屏幕外（看不到，但真实渲染）", "INFO")
+        else:
+            launch_args.append('--start-maximized')
+
+        if headless:
+            log("警告：已启用 headless，活动页可能返回反爬挑战页", "WARNING")
 
         last_error = None
         for channel in channels:
@@ -351,8 +370,8 @@ class TencentCloudBot:
                 self.context = playwright.chromium.launch_persistent_context(
                     user_data_dir=str(profile_dir),
                     channel=channel,
-                    headless=False,
-                    no_viewport=True,
+                    headless=headless,
+                    no_viewport=not hide_window,
                     args=launch_args,
                 )
                 self.page = (
@@ -457,7 +476,7 @@ class TencentCloudBot:
                         
                     # 重新定位商品 (非常重要！刷新后所有ElementHandle都失效了)
                     log("刷新后重新定位商品...", "INFO")
-                    finder = ProductFinder(self.page, self.config["target"], self.config["timeout"])
+                    finder = ProductFinder(self.page, self._target_config_for_mode(), self.config["timeout"])
                     
                     # 使用 _locate_target_product (它是TencentCloudBot的方法，需要self调用)
                     # 但在这里我们直接调用finder逻辑即可，简单点
@@ -504,7 +523,7 @@ class TencentCloudBot:
         # 1. 准备页面
         finder = ProductFinder(
             self.page,
-            self.config["target"],
+            self._target_config_for_mode(),
             self.config["timeout"]
         )
         finder.prepare_page(
@@ -526,6 +545,31 @@ class TencentCloudBot:
         )
         return flow.execute(buy_button)
     
+    def _target_config_for_mode(self):
+        """当前模式下的选品条件。
+
+        测试档的规格可能和正式档完全不同（正式 4核4G3M 38 元、测试 2核2G3M 68 元），
+        所以测试模式下要覆盖 text/bandwidth；同时清空 exclude_specs ——
+        那份排除表是按正式档写的（例如 2核2G 正在被排除），照用会把测试目标误杀掉。
+        """
+        target = dict(self.config["target"])
+        if not self.config["run_mode"]["test_mode"]:
+            return target
+
+        text = target.get("test_text")
+        if text:
+            target["text"] = text
+        bandwidth = target.get("test_bandwidth")
+        if bandwidth is not None:
+            target["bandwidth"] = bandwidth
+        target["exclude_specs"] = []
+        log(
+            f"测试模式选品条件: text={target.get('text')!r} "
+            f"bandwidth={target.get('bandwidth')!r} 价格={self._get_target_prices()}",
+            "INFO",
+        )
+        return target
+
     def _get_target_prices(self):
         """获取目标价格（扁平列表，购买流程侧使用）"""
         target = self.config["target"]

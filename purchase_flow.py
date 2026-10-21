@@ -1,6 +1,7 @@
 """
 购买流程模块 - 处理点击购买后的流程
 """
+import payment
 from logger import log
 from utils import wait_with_progress
 from login_handler import LoginHandler
@@ -304,10 +305,64 @@ class PurchaseFlow:
                 continue
 
             if self._wait_submitted(start_url):
+                self._capture_payment_qr()
                 return True
 
         log("未确认提交成功，请人工点击（不再自动重复点击，避免重复下单）", "WARNING")
         return False
+
+    def _capture_payment_qr(self):
+        """提交成功后：等支付页出现，把二维码单独保存下来。
+
+        浏览器如果是离屏运行的，用户看不到收银台，所以必须把二维码
+        提取成图片交给界面显示；找不到元素时兜底存整页截图。
+        """
+        cfg = self.config.get("payment", {}) or {}
+        wait_seconds = int(cfg.get("wait_seconds", 20))
+        qr_dir = cfg.get("qr_dir", "qrcodes")
+        keep = int(cfg.get("keep_last", 10))
+
+        try:
+            context = self.page.context
+        except Exception:
+            context = None
+        if context is None:
+            return None
+
+        pay_page, waited = payment.find_payment_page(context, wait_seconds * 1000)
+        if pay_page is None:
+            log(
+                f"提交后 {wait_seconds} 秒内没检测到支付页，跳过二维码提取"
+                "（可在浏览器里手动完成支付）",
+                "WARNING",
+            )
+            return None
+
+        log(f"已进入支付页（等待 {waited} ms）: {pay_page.url}", "SUCCESS")
+
+        # 收银台首页通常只有「余额/在线支付」两个选项，二维码在点完「下一步」
+        # 之后的第三方支付页里（可能新开标签页）。先自动推进，再多页搜二维码。
+        if cfg.get("auto_next_step", True):
+            pages = payment.advance_to_qr(pay_page, context, cfg)
+            for candidate in pages[:4]:
+                try:
+                    saved = payment.capture_qr(candidate, qr_dir, tag="pay", keep=keep)
+                except Exception as exc:
+                    log(f"在 {getattr(candidate, 'url', '?')[:60]} 上取二维码失败: {str(exc)[:80]}", "DEBUG")
+                    continue
+                if saved and not saved[0].endswith("_fullpage.png"):
+                    log(f"支付二维码: {saved[0]}", "SUCCESS")
+                    return saved[0]
+            log("推进后仍未取到二维码元素，保存整页截图兜底", "WARNING")
+
+        saved = payment.capture_qr(pay_page, qr_dir, tag="pay", keep=keep)
+        if saved:
+            # 这一行的格式被界面依赖：gui.py 靠「支付二维码: 」前缀取路径
+            log(f"支付二维码: {saved[0]}", "SUCCESS")
+            return saved[0]
+
+        log("未能提取到二维码，请在浏览器里手动扫码支付", "ERROR")
+        return None
 
     def _find_dialog_scope(self):
         """返回可见的配置弹窗；没有则返回 None。"""
