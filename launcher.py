@@ -31,11 +31,22 @@ def _configure_browser_path() -> None:
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(bundled)
 
 
+# 打包成窗口化（console=False）时，启动瞬间 sys.stdout 就是 None。
+# 记下这个事实：后面判断「要不要临时开一个控制台」只能靠它，
+# 不能用 GetConsoleWindow() —— 从管道/CI 里调用时那个值也是 0，
+# 会被误判成没控制台，于是把 --version 的输出拽到一个新窗口里，
+# 管道就再也读不到版本号了。
+_STDOUT_MISSING = False
+
+
 def _ensure_console() -> None:
     """无控制台构建下 stdout 可能为 None，统一兜底为 UTF-8。"""
+    global _STDOUT_MISSING
     for name in ("stdout", "stderr"):
         stream = getattr(sys, name)
         if stream is None:
+            if name == "stdout":
+                _STDOUT_MISSING = True
             # 窗口模式（console=False）下没有控制台：给个黑洞流，
             # 免得 logging 的 StreamHandler 和 print 抛 AttributeError。
             try:
@@ -54,8 +65,11 @@ def _acquire_console() -> None:
 
     只有 --version / --self-check 这类「输出到屏幕」的场景才需要，
     图形界面模式下不能调，否则会多弹一个黑窗口。
+
+    判断依据是启动时 stdout 是否存在（见 _STDOUT_MISSING）：
+    有 stdout（控制台版、或被 CI 用管道调用）就绝不动它，否则输出会丢。
     """
-    if sys.platform != "win32":
+    if sys.platform != "win32" or not _STDOUT_MISSING:
         return
     try:
         import ctypes
@@ -141,8 +155,30 @@ def _self_check() -> int:
     return 0 if ok else 1
 
 
+def _detach_console() -> None:
+    """进入图形界面时释放控制台。
+
+    文件夹版是 console=True 构建的（为了让 `--cli` 有输出），双击时
+    会先弹一个黑窗口。开了窗口就不再需要它，这里主动释放，
+    免得用户面前挂着两个窗口。单文件 GUI 版本来就没控制台，这里是空操作。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        if kernel32.GetConsoleWindow() != 0:
+            kernel32.FreeConsole()
+            sys.stdout = open(os.devnull, "w", encoding="utf-8")
+            sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    except Exception:
+        pass
+
+
 def _run_gui() -> int:
     """打开图形界面；失败时尽量给出可读提示（窗口模式下没有控制台）。"""
+    _detach_console()
     try:
         from gui import run_gui
     except Exception:

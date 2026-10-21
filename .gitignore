@@ -42,10 +42,9 @@ browser-data/
 session-state.json
 config.local.py
 
-# 图形界面分支的构建产物
+# 图形界面 / 单文件版的构建产物
 dist-gui/
 build-gui/
-self-check.log
 dist-debug/
 build-debug/
 LighthouseKeeperGUI-debug.spec

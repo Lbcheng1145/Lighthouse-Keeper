@@ -1,183 +1,144 @@
-# 腾讯云轻量服务器自动抢购脚本 (Playwright 版)
+# 腾讯云轻量服务器自动抢购脚本（图形界面版）
 
-当前版本：v1.0.3 —— 版本号只在 `config.py` 的 `VERSION` 维护一处，
-启动横幅、`--version`、exe 文件属性都由它派生。确认手上的包是哪一版：
+当前版本：v1.1.0
+
+基于 Python + Playwright 的腾讯云活动页抢购工具，用于抢购轻量应用服务器
+（如 38 元/年 4核4G 套餐）。从 v1.1.0 起默认带**图形界面**，并支持打包成
+**单个 exe**：下载 → 双击 → 窗口里点「开始抢购」即可，不需要装 Python。
+
+版本号只在 `config.py` 的 `VERSION` 维护一处，启动横幅、`--version`、
+exe 文件属性都由它派生。确认手上的包是哪一版：
 
 ```bash
 LighthouseKeeper.exe --version
 ```
 
-基于 Python 和 Playwright 的自动化脚本，用于抢购腾讯云活动页面的轻量应用服务器
-（如 38 元/年 4核4G 套餐）。
-
-支持两种用法：**直接下载免安装的 exe**，或从源码运行。
-
-> ⚠️ 使用前请注意：脚本中写死的活动页地址（`double12-2025`）可能已经下线。
+> ⚠️ 使用前请注意：脚本里写死的活动页地址（`double12-2025`）可能已经下线。
 > 请先确认该页面还有在售商品，否则脚本会一直找不到目标。
 > 详见下文「更换活动页」一节。
 
 > 🤖 **声明**：本仓库是在原项目基础上的二次开发版本，
-> 其中的改造内容**主要由 AI 完成**（打包、浏览器改造、登录态复用、
+> 其中的改造内容**主要由 AI 完成**（图形界面、单文件打包、登录态复用、
 > CI 自动化及相关修复）。代码虽经过实际运行验证，但请自行评估风险后使用。
-
----
-
-## 🙏 致谢
-
-本项目的核心抢购逻辑来自以下开源项目，在此向原作者表示感谢：
-
-*   **原项目**：[dailyoozoo/Lighthouse-Keeper](https://github.com/dailyoozoo/Lighthouse-Keeper)
-    —— 提供了商品定位、倒计时触发、购买流程等全部基础实现。
-
-本仓库（[Lbcheng1145/Lighthouse-Keeper](https://github.com/Lbcheng1145/Lighthouse-Keeper)）
-是在其之上的 fork，主要新增：
-
-*   PyInstaller 打包与 GitHub Actions 自动构建
-*   改用本机浏览器 + 持久化登录态（免重复扫码）
-*   外部配置文件支持
-*   日志与目录创建的健壮性修复
-
-原项目未附带开源许可证，本仓库同样未声明许可证。
-如需将代码用于再分发等场景，建议先联系原作者获得授权。
 
 ---
 
 ## ✨ 功能特点
 
-*   **全自动流程**：自动登录检测、商品定位、倒计时等待、准点抢购、自动下单。
-*   **精准定位**：双轮筛选（价格匹配 + 特征匹配）配合容器定位策略，
-    缩小误判范围。
+*   **图形界面**：模式、规格、价格、抢购时间都能在窗口里改；运行日志实时显示，
+    「停止」按钮能立刻中断倒计时。
+*   **单文件分发**：一个约 49 MB 的 exe，双击就开窗口，不释放一堆依赖文件。
+*   **全自动流程**：登录检测、商品定位、倒计时等待、准点抢购、自动下单。
+*   **精准选品**：规格 + 价格 + 规格细节三重校验，同规格不同价位的卡不会选错。
+*   **防重复下单**：购买按钮只点一次、提交只在配置弹窗内、默认不自动重试。
 *   **登录态复用**：首次扫码后，后续启动无需重复登录。
-*   **免安装分发**：可打包为单个文件夹的 Windows 程序，目标机器无需 Python。
-*   **调用本机浏览器**：不内置 Chromium，直接使用系统中的 Edge / Chrome。
-*   **多模式支持**：测试模式（4核4G3M 109 元常售档）与生产模式（38/39 元秒杀档）。
-*   **图形界面（试验分支）**：`feature/gui` 分支额外提供窗口版，并可打包成**单个 exe**。
+*   **调用本机浏览器**：不内置 Chromium，直接用系统中的 Edge / Chrome。
+*   **命令行仍可用**：加 `--cli` 即为原来的无界面模式，方便计划任务 / 远程运行。
 
 ---
 
-## 🖼 图形界面（试验分支 `feature/gui`）
+## 🚀 快速开始
 
-> 只在 `feature/gui` 分支上，`main` 的正式发布不受影响。
+### 方式一：单文件 exe（推荐）
 
-窗口里能做的事：
+1.  打开本仓库的 **Releases**，下载最新版本的 `LighthouseKeeper.exe`
+   （约 49 MB，单个文件）。
+2.  放到一个**有写权限的目录**（例如 `D:\LighthouseKeeper\`）后双击运行。
+3.  窗口里选好模式 → 点「开始抢购」。
 
-*   选模式（测试 109 元 / 正式 38-39 元）、改目标规格、带宽、价格、抢购时间、活动页地址
-*   按钮：**开始抢购 / 停止 / 保存配置 / 打开活动页 / 打开日志目录**
-*   运行日志实时显示在窗口里，停止按钮能真正中断倒计时等待
-*   配置改动会写进 exe 同目录的 `config.local.py`，命令行模式共用同一份
+> 首次启动会慢几秒：单文件需要把内容解压到临时目录。
+> 程序会在自己所在目录生成 `logs/`、`browser-data/`、`session-state.json`、
+> `config.local.py`，所以不要放在只读位置（例如 `C:\Program Files\`）。
 
-两种用法都保留：
+### 方式二：文件夹版（体积大一点，启动快）
 
-```bash
-LighthouseKeeper.exe            # 双击 → 打开窗口（默认）
-LighthouseKeeper.exe --cli      # 无界面，行为与原来一致
-LighthouseKeeper.exe --version  # 只看版本
-LighthouseKeeper.exe --self-check  # 打包自检：浏览器驱动能否启动（不碰账号、不下单）
-```
+从 Release 下载 `LighthouseKeeper-windows.zip`，解压后双击 `LighthouseKeeper.exe`。
+解压出来的目录里带 `_internal\`，**不要只单独拷 exe**。
 
-单文件版构建（产物 `dist-gui/LighthouseKeeper.exe`，约 49 MB）：
+文件夹版和单文件版的功能完全一致，区别只是打包方式。
 
-```bash
-pyinstaller LighthouseKeeperGUI.spec --noconfirm --distpath dist-gui --workpath build-gui
-```
-
-注意：单文件每次启动要把内容解压到临时目录，**首次启动会慢几秒**；
-因为是无签名的新 exe，个别杀毒软件可能提示，属正常现象。
-
----
-
-## 🚀 方式一：直接使用 exe（推荐普通用户）
-
-1.  打开本仓库的 **Actions** 页面，选择最近一次成功的
-    `Build Windows Release` 运行。
-2.  在页面底部 **Artifacts** 中下载 `LighthouseKeeper-windows-zip`。
-3.  解压后双击 `LighthouseKeeper.exe` 即可，**无需安装 Python 或浏览器**。
-
-首次运行若未登录，会暂停并提示扫码。登录成功后程序会自动保存登录态，
-之后启动不再需要扫码。
-
-### 修改抢购时间 / 价格
-
-配置已编译进 exe，需通过外部文件覆盖：把 `config.example.py` 复制为
-`config.local.py`，放在 **exe 同级目录**，只保留你要改的项：
-
-```python
-RUN_MODE = {
-    "test_mode": False,
-    "buy_times": ["10:00:00", "15:00:00"],
-}
-
-TARGET_CONFIG = {
-    "text": "4核4G",
-    "prod_prices": ["38", "39"],
-}
-```
-
-保存后重启程序，控制台出现
-`[配置] 已应用 config.local.py 中的 N 项自定义配置` 即表示生效。
-
----
-
-## 🛠️ 方式二：从源码运行
-
-### 环境要求
-
-*   Python 3.10+
-*   本机已安装 Microsoft Edge 或 Google Chrome
-
-### 1. 安装依赖
+### 方式三：从源码运行
 
 ```bash
 pip install -r requirements.txt
+python gui.py          # 打开窗口
+python main.py --cli   # 或者直接跑命令行流程
 ```
 
-> 仅当你的机器上没有 Edge / Chrome 时，才需要额外执行
-> `playwright install chromium` 来下载内置内核。
-> 程序默认优先使用系统浏览器。
+只在这台机器没有 Edge / Chrome 时，才需要额外执行
+`playwright install chromium` 下载内置内核；程序默认优先用系统浏览器。
 
-### 2. 检查配置
+---
 
-编辑 `config.py`（或用 `config.local.py` 覆盖），确认关键项：
+## 🖼 图形界面
 
-```python
-# 运行模式
-RUN_MODE = {
-    "test_mode": False,                     # True = 109 元测试；False = 正式
-    "buy_times": ["10:00:00", "15:00:00"],  # 秒杀时间点（本地时间）
-}
+窗口里能做的事：
 
-# 目标商品
-TARGET_CONFIG = {
-    "text": "4核4G",                        # 需与活动页描述一致
-    "prod_prices": ["38", "39"],
-}
+| 区域 | 可改内容 |
+| --- | --- |
+| 模式 | 测试模式（立即抢 109 元常售档）/ 正式模式（到点抢 38-39 元秒杀档） |
+| 商品 | 目标规格文字、带宽、测试价、正式价 |
+| 时间 | 抢购时间点（可写多个，逗号分隔） |
+| 页面 | 活动页地址（活动改版时直接换，不用改代码） |
+| 开关 | 是否允许「点击后没看到弹窗就重新定位再点一次」（默认关，防重复下单） |
 
-# 活动页
-PAGE_CONFIG = {
-    "url": "https://cloud.tencent.com/act/pro/double12-2025#MS",
-}
-```
+按钮：**开始抢购 / 停止 / 保存配置 / 打开活动页 / 打开日志目录**。
 
-### 3. 运行
+点「保存配置」会把配置写进 exe 同目录的 `config.local.py`，下次启动自动加载，
+命令行模式也用同一份配置。
 
-建议在开抢前 15–30 分钟启动：
+### 命令行参数
 
 ```bash
-python main.py
+LighthouseKeeper.exe                # 默认：开图形界面
+LighthouseKeeper.exe --cli          # 无界面，跑原来的命令行流程
+LighthouseKeeper.exe --version      # 只打印版本号
+LighthouseKeeper.exe --self-check   # 打包自检：浏览器驱动 + tkinter 是否正常
+                                    #（不碰账号、不下单，结果也写进 self-check.log）
 ```
 
 ---
 
 ## 🔄 操作流程
 
-1.  **启动**：打开浏览器并访问活动页。
-2.  **登录**：若未登录会暂停提示扫码；登录成功后自动保存登录态。
-3.  **定位**：自动滚动页面查找目标商品，控制台中高亮该按钮。
-4.  **等待**：进入倒计时，每 0.5 秒检查一次时间。
-5.  **抢购**：
-    *   **赛前刷新**：开抢前约 2 分钟自动刷新页面保活；
-    *   **准点出击**：到点自动点击购买、处理弹窗、选择镜像、提交订单。
-6.  **支付**：脚本停留在支付页，**最后一步需你手动完成**。
+1.  **启动**：程序打开浏览器并访问活动页（窗口里能看到实时日志）。
+2.  **登录**：若未登录会暂停并提示扫码；登录成功后自动保存登录态。
+3.  **定位**：自动逐屏滚动，等秒杀模块渲染出来后锁定目标商品并高亮。
+4.  **等待**：进入倒计时；开抢前约 2 分钟自动刷新页面保活并重新定位。
+5.  **抢购**：到点后点击购买 → 处理弹窗 → 选择镜像 → 提交订单。
+6.  **支付**：程序停在支付页，**最后一步需要你手动完成**。
+
+想中途放弃，点窗口里的「停止」即可（会正常保存登录态再关掉浏览器）。
+
+---
+
+## ⚙️ 配置说明
+
+配置有三层，优先级从高到低：
+
+1.  **窗口里的设置** —— 点「保存配置」后写入 `config.local.py`，最常用；
+2.  **`config.local.py`** —— 与 exe 同级；只写要改的项，其余用内置默认值；
+3.  **`config.py`** —— 内置默认值（版本号也在这里）。
+
+外置配置的例子（`config.local.py`）：
+
+```python
+RUN_MODE = {
+    "test_mode": False,                     # True = 抢 109 元测试档；False = 正式
+    "buy_times": ["10:00:00", "15:00:00"],  # 秒杀时间点（本地时间）
+    "allow_retry_purchase": False,          # 别设 True：那是重复下单入口
+}
+
+TARGET_CONFIG = {
+    "text": "4核4G",                        # 需与活动页描述一致
+    "bandwidth": "3M",
+    "prod_prices": ["38", "39"],
+}
+
+PAGE_CONFIG = {
+    "url": "https://cloud.tencent.com/act/pro/double12-2025#MS",
+}
+```
 
 ---
 
@@ -185,58 +146,73 @@ python main.py
 
 | 文件 | 作用 |
 | --- | --- |
-| `main.py` | 主程序入口，调度整个流程 |
-| `config.py` | 默认配置：商品信息、运行模式、超时 |
+| `gui.py` | 图形界面（tkinter）：配置表单、起停控制、日志显示 |
+| `main.py` | 抢购主流程，调度定位 / 等待 / 购买 |
+| `config.py` | 默认配置 + `VERSION`（版本号唯一来源） |
 | `config.example.py` | 外置配置模板，复制为 `config.local.py` 使用 |
-| `product_finder.py` | 核心模块，在页面中查找并定位目标商品 |
-| `purchase_flow.py` | 购买流程：下单、弹窗处理、协议勾选 |
-| `login_handler.py` | 登录状态检测与登录弹窗处理 |
-| `logger.py` | 日志模块，控制台 + 文件双输出 |
-| `utils.py` | 通用工具函数 |
-| `launcher.py` | 打包入口（PyInstaller 使用） |
-| `LighthouseKeeper.spec` | PyInstaller 打包配置 |
-| `scripts/ci_smoke_test.py` | CI 冒烟测试，验证打包产物能否启动 |
-| `scripts/test_product_matcher.py` | 选品判据回归测试（价格文案 / 按钮识别），CI 会执行 |
-| `scripts/test_purchase_flow.py` | 购买流程回归测试（点击次数 / 提交范围 / 重试开关），CI 会执行 |
-| `.github/workflows/build.yml` | GitHub Actions 自动构建 |
+| `product_finder.py` | 定位目标商品：懒渲染适配、三重判据、按钮识别 |
+| `purchase_flow.py` | 购买流程：点击、弹窗、选镜像、提交订单 |
+| `login_handler.py` | 登录检测（强/弱证据区分）与扫码等待 |
+| `logger.py` | 日志，控制台 + 文件双输出 |
+| `utils.py` | 通用工具（价格文案匹配等） |
+| `launcher.py` | 打包入口：GUI / `--cli` / `--version` / `--self-check` |
+| `LighthouseKeeper.spec` | 打包配置：文件夹版（`dist/`） |
+| `LighthouseKeeperGUI.spec` | 打包配置：单文件 GUI 版（`dist-gui/`） |
+| `scripts/test_product_matcher.py` | 选品判据回归测试 |
+| `scripts/test_purchase_flow.py` | 购买流程回归测试（点击次数 / 提交范围 / 重试） |
+| `scripts/test_login_detect.py` | 登录判定回归测试（强弱证据 / 不空等二维码） |
+| `scripts/test_gui.py` | 界面无窗口冒烟测试（配置落盘、日志桥接、停止信号） |
+| `scripts/test_version.py` | 版本号一致性测试 |
+| `scripts/cleanup_releases.py` | 清理旧 Release / tag（默认只预览） |
+| `.github/workflows/build.yml` | CI：测试 → 双产物构建 → 自检 → 发布 |
 
 运行时生成（**已 gitignore，含凭据，请勿提交**）：
 
 *   `browser-data/` — 浏览器用户数据目录
 *   `session-state.json` — 登录 cookie 快照
 *   `logs/` — 运行日志
+*   `config.local.py` — 你在窗口里保存的配置
 
 ---
 
-## 📦 打包
+## 📦 打包与发版
 
 ### 自动构建
 
-推送到 `main`、发起 PR，或推送 `v*` 标签时，GitHub Actions 会自动构建：
+推送到 `main`、发起 PR，或推送 `v*` 标签时，GitHub Actions 会：
 
-*   在 **Actions** 页面下载 `LighthouseKeeper-windows` 产物；
-*   推送形如 `v1.0.3` 的标签会自动创建 Release 并附带 zip。
-
-### 发版流程（版本号只有一处）
-
-1.  改 `config.py` 里的 `VERSION`（如 `1.0.4`）；
-2.  提交并推送 `main`；
-3.  打同名标签并推送：`git tag -a v1.0.4 -m "v1.0.4" && git push fork v1.0.4`；
-4.  CI 构建完成后自动发布 Release，zip 里的 exe 属性版本与 tag 一致。
-
-版本一致性由 `scripts/test_version.py` 在 CI 中守护（横幅/`--version`/
-打包脚本都必须读同一个 `VERSION`）。
+1.  跑 5 套回归测试（共 91 项断言）；
+2.  构建**两个**产物：
+    *   `LighthouseKeeper.exe` —— 单文件 GUI 版（约 49 MB）
+    *   `LighthouseKeeper-windows.zip` —— 文件夹版（约 47 MB）
+3.  对两个产物做校验：`--version` 与 tag 一致、单文件目录里只有一个 exe、
+    打包内 Playwright 驱动与 tkinter 可用（`SELF-CHECK OK` / `GUI-CHECK OK`）；
+4.  推 `v*` 标签时自动建 Release，两个产物都附上。
 
 ### 本地构建
 
 ```bash
 pip install -r requirements.txt pyinstaller
+
+# 文件夹版 → dist/LighthouseKeeper/
 pyinstaller LighthouseKeeper.spec --noconfirm
+
+# 单文件 GUI 版 → dist-gui/LighthouseKeeper.exe
+pyinstaller LighthouseKeeperGUI.spec --noconfirm --distpath dist-gui --workpath build-gui
 ```
 
-产物位于 `dist/LighthouseKeeper/`（约 125 MB，压缩后约 47 MB）。
+### 发版流程（版本号只有一处）
 
-### 关于登录态
+1.  改 `config.py` 里的 `VERSION`（如 `1.1.1`）；
+2.  提交并推送 `main`；
+3.  `git tag -a v1.1.1 -m "v1.1.1" && git push fork v1.1.1`；
+4.  CI 自动构建并发布 Release，两个产物的版本都与 tag 一致。
+
+版本一致性由 `scripts/test_version.py` 和 CI 的 tag 校验共同守护。
+
+---
+
+## 🔐 关于登录态
 
 程序使用持久化的用户数据目录，登录态分两处保存：
 
@@ -249,7 +225,7 @@ cookie 快照，下次启动再回灌。
 
 > 这两个位置含有你的登录凭据，已被 `.gitignore` 排除，请勿提交或外发。
 > 更换账号：删除它们后重新扫码即可。
-> 建议在登录成功、控制台出现「登录态已保存」后再关闭程序，确保快照写入完成。
+> 建议在登录成功、日志出现「登录态已保存」后再关闭程序，确保快照写入完成。
 
 ---
 
@@ -258,30 +234,71 @@ cookie 快照，下次启动再回灌。
 1.  **系统时间**：脚本依赖本地时间触发，请确保系统时间准确。
 2.  **人工值守**：开抢关键时刻（如 09:58–10:01）建议保持关注，
     以便处理滑块验证码等需人工介入的情况。
-3.  **浏览器窗口**：运行期间请勿关闭浏览器窗口。
+3.  **浏览器窗口**：运行期间请勿关闭浏览器窗口（要停就用窗口里的「停止」）。
 4.  **页面变更**：所有选择器都针对当前活动页编写，页面改版后需要相应调整。
+5.  **目录要有写权限**：程序会在自身目录写日志、登录态和配置。
 
 ---
 
 ## 🔧 更换活动页
 
-活动页地址写在 `config.py` 的 `PAGE_CONFIG["url"]`。旧活动下线后需要更换，
-通常还要一并调整：
+活动页地址可以直接在窗口里改；也可以写进 `config.local.py` 的
+`PAGE_CONFIG["url"]`。旧活动下线后通常还要一并调整：
 
 *   `PAGE_CONFIG["tabs"]` — 商品分组标签文字
-*   `TARGET_CONFIG["text"]` — 目标商品的特征文字
+*   `TARGET_CONFIG["text"]` / `["bandwidth"]` — 目标商品的特征文字
 *   `product_finder.py` 中的卡片选择器（如 `.qc-base-grid__col`）
 
-建议先用测试模式（`test_mode = True`）验证能否正确定位，再切换到正式模式。
+建议先用测试模式验证能否正确定位，再切换到正式模式。
 
 ---
 
 ## 📝 常见问题
 
+**Q: 点「立即购买」后提示需要登录，然后卡住了？**
+
+A: v1.1.0 已修。旧版本会把配置页上的「登录」两个字当成登录需求，接着又找不到
+二维码，于是白等 5 分钟。现在登录判定分强弱证据：只有真正的登录弹窗 / 二维码 /
+登录页才算数，「登录」字样本身会被忽略并继续流程；即使真的需要登录，也只观察
+30 秒，等不到二维码就继续，不会把抢购时间耗光。
+
+如果确实需要扫码：在浏览器窗口里完成登录，然后点「停止」再「开始抢购」。
+日志里现在会打印现场状态（`URL=... | 可见元素=[...]`），必要时把它发 Issue。
+
+**Q: 双击 exe 什么都没出现 / 一闪而过？**
+
+A: 先在命令行里跑一次，看完整报错：
+
+```powershell
+.\LighthouseKeeper.exe --version
+.\LighthouseKeeper.exe --self-check
+```
+
+`--self-check` 会检查打包内的 Playwright 驱动和 tkinter，并把结果写进
+`self-check.log`。常见原因是：目录不可写（换到自己有权限的目录）、
+杀毒软件拦截（加白名单）、或系统缺少 Edge/Chrome。
+
+**Q: 单文件版启动有点慢？**
+
+A: 正常。单文件每次启动要把内容解压到临时目录，第一次或杀毒扫描时会慢几秒。
+想要启动更快就用 Release 里的文件夹版。
+
+**Q: 会不会重复下单 / 一次买两个商品？**
+
+A: 不会。购买链路上做了三层防重复：
+
+*   **只点一次**：点击购买按钮后不会因为「没弹出新标签页」而重点，
+    页内弹窗本来就不会产生新标签页。
+*   **提交只在弹窗内**：提交订单只认配置弹窗里的按钮。早期版本把页面级
+    `立即购买` 也当候选，而活动页每张卡都有这个按钮，于是会买到别的商品。
+*   **默认不自动重试**：点完看不到配置弹窗时，默认记录错误并停下，
+    不再「重新定位商品再点一次」。确认点击确实无效时才打开
+    `allow_retry_purchase`。
+
 **Q: 关掉浏览器再打开，为什么又要重新登录？**
 
 A: 检查程序目录下是否存在 `session-state.json`。若没有，说明上次登录后
-没走到保存那一步就退出了。请重新扫码，等控制台打印
+没走到保存那一步就退出了。请重新扫码，等日志打印
 「登录态已保存: session-state.json」后再关闭。之后即可长期免登录。
 
 **Q: 提示「无法启动浏览器」？**
@@ -299,47 +316,44 @@ A: 先看日志里有没有「秒杀模块已渲染（下滚 N 屏）」这一�
 
 *   **没有这行** —— 活动页的秒杀模块是**懒渲染**的，只有滚到那一屏卡片才进 DOM。
     脚本会自动逐屏滚动触发渲染；如果滚动到底仍是「整页滚动完成仍未检测到秒杀模块」，
-    说明活动已结束、页面被风控降级成简化版，或链接变了，用浏览器手动打开确认即可，
-    必要时在 `config.local.py` 里把 `PAGE_CONFIG["url"]` 换成最新活动页。
+    说明活动已结束、页面被风控降级成简化版，或链接变了。用浏览器手动打开确认，
+    必要时在窗口里把活动页地址换成最新页面。
 *   **有这行但仍未找到** —— 说明 `TARGET_CONFIG` 与当前页面描述不一致（改版了）。
-    参见下文「更换活动页」一节。
+    参见上文「更换活动页」。
 
 **Q: 到点抢到的不是我想要的那一档（同规格但价格不同）？**
 
 A: 选品是「规格 + 价格 + 规格细节」三重校验，三者必须同时命中：
 
 *   `text` —— 卡片必须含该文字（如 `4核4G`）
-*   `bandwidth` —— 必须紧跟在 `text` 之后（如 `4核4G3M`），用于挡住同核数不同带宽的相邻档
+*   `bandwidth` —— 必须紧跟在 `text` 之后（如 `4核4G3M`），挡住同核数不同带宽的相邻档
 *   `prod_prices` —— 必须命中其中任一价格，且必须是 `¥38` / `38元` 这种**真正的价格文案**；
     `已抢38%`、`38.35元`、`398元`、`3.8折` 都不算命中
 *   `exclude_specs` —— 命中任一项即排除该卡片
 
 活动页同时存在 `4核4G3M 38元`（秒杀）与 `4核4G3M 109元`（常售）两张同规格卡，
-**只有价格能区分它们**，所以价格配错就会锁到另一张。
-改完配置建议先用测试模式跑一次，确认日志里 `✅ 锁定商品（得分 …）` 那一行
-打印的规格与价格正是你要的那一档。
-
-**Q: 会不会重复下单 / 一次买两个商品？**
-
-A: 不会。购买链路上做了三层防重复：
-
-*   **只点一次**：点击购买按钮后不会因为「没弹出新标签页」而重点，
-    页内弹窗不会产生新标签页，早期版本因此在同一按钮上点了两次。
-*   **提交只在弹窗内**：提交订单只认配置弹窗里的按钮。早期版本把页面级
-    `立即购买` 也当候选，而活动页每张卡都有这个按钮，于是会买到别的商品。
-*   **默认不自动重试**：点完看不到配置弹窗时，默认记录错误并停下，
-    不再「重新定位商品再点一次」。确认点击确实无效时，可在
-    `config.local.py` 里把 `RUN_MODE["allow_retry_purchase"]` 设为 `True`。
+**只有价格能区分它们**。改完配置建议先用测试模式跑一次，确认日志里
+`✅ 锁定商品（得分 …）` 那一行打印的规格与价格正是你要的那一档。
 
 **Q: 测试模式会不会抢成正式商品？**
 
 A: 不会。测试模式买的是 `4核4G3M 109 元`（常售档，走完整下单流程验证），
-`test_prices_fallback` 默认留空 —— 页面上找不到 109 档时脚本直接报错停下，
-不会降级去抢 38 元秒杀档，所以不存在「测试买成正式套餐」的情况。
+`test_prices_fallback` 默认留空 —— 页面上找不到 109 档时直接报错停下，
+不会降级去抢 38 元秒杀档。
 
+---
 
+## 🙏 致谢
 
-A: 在 PowerShell 中进入该目录执行 `.\LighthouseKeeper.exe`，即可看到完整报错。
+本项目的核心抢购逻辑来自以下开源项目，在此向原作者表示感谢：
+
+*   **原项目**：[dailyoozoo/Lighthouse-Keeper](https://github.com/dailyoozoo/Lighthouse-Keeper)
+    —— 提供了商品定位、倒计时触发、购买流程等全部基础实现。
+
+本仓库（[Lbcheng1145/Lighthouse-Keeper](https://github.com/Lbcheng1145/Lighthouse-Keeper)）
+是在其之上的 fork，主要新增：图形界面与单文件打包、改用本机浏览器 +
+持久化登录态、外部配置文件、秒杀模块懒渲染适配、防重复下单、
+以及完整的 CI（回归测试 + 双产物构建 + 发布）。
 
 ---
 
