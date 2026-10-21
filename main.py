@@ -177,12 +177,12 @@ class TencentCloudBot:
                 # 抢购时刻只「定位」不点击：点击统一交给 purchase_flow.execute，
                 # 否则同一个按钮会被点两次（可能开两个标签页、下两个单）。
                 pre_button = buy_button  # 赛前锁定的句柄，刷新后可能已失效
-                success, buy_button = self._find_target(finder, click=False)
+                success, buy_button = self._find_target(finder, click=False, wait_seconds=8)
 
                 if not success or buy_button is None:
                     log("抢购时刻未定位到可购买按钮，稍后重试一次...", "WARNING")
                     self.page.wait_for_timeout(300)
-                    success, buy_button = self._find_target(finder, click=False)
+                    success, buy_button = self._find_target(finder, click=False, wait_seconds=5)
 
                 if not success or buy_button is None:
                     # 兜底必须用赛前锁定的旧句柄，而不是刚返回的空值
@@ -242,7 +242,10 @@ class TencentCloudBot:
         target_prices = self._get_target_prices()
         # 查找但不点击 (click=False)；开抢前按钮可能还是「添加提醒」，
         # 此时只要求锁定卡片位置，不要求此刻可购买。
-        success, button = self._find_target(finder, click=False, require_buyable=False)
+        # wait_seconds：秒杀模块异步渲染，给它一点时间再判定失败。
+        success, button = self._find_target(
+            finder, click=False, require_buyable=False, wait_seconds=15
+        )
         
         if success and button:
             log("已锁定目标商品！", "SUCCESS")
@@ -416,7 +419,7 @@ class TencentCloudBot:
                     finder.prepare_page(self.config["page"]["tabs"], self.config["page"]["scroll_times"])
                     target_prices = self._get_target_prices()
                     success, button = self._find_target(
-                        finder, click=False, require_buyable=False
+                        finder, click=False, require_buyable=False, wait_seconds=15
                     )
                     
                     if success and button:
@@ -504,12 +507,17 @@ class TencentCloudBot:
             return tiers
         return [list(target["prod_prices"])]
 
-    def _find_target(self, finder, click=False, require_buyable=True):
+    def _find_target(self, finder, click=False, require_buyable=True, wait_seconds=0):
         """按价格分组依次尝试定位，返回 (success, element)。"""
         result = (False, None)
         for tier in self._get_target_price_tiers():
             log(f"按价格分组定位: {tier}", "DEBUG")
-            result = finder.find_and_click(tier, click=click, require_buyable=require_buyable)
+            result = finder.find_and_click(
+                tier,
+                click=click,
+                require_buyable=require_buyable,
+                wait_seconds=wait_seconds,
+            )
             if result[0]:
                 return result
         return result

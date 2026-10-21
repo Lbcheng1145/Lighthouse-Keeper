@@ -131,10 +131,93 @@ def test_return_contract():
     check("赛前预定位 -> 返回卡片本身", pre_result[1] is pre._card, True)
 
 
+class FakeMouse:
+    def __init__(self, page=None):
+        self.wheels = 0
+        self._page = page
+
+    def wheel(self, x, y):
+        self.wheels += 1
+        if self._page is not None:
+            self._page._wheels += 1
+
+
+class FakeKeyboard:
+    def press(self, key):
+        return None
+
+
+class FakePage:
+    """最小页面桩：记录滚动次数，可设定「第几屏之后秒杀模块才出现」。"""
+
+    def __init__(self, ready_after_wheels=None):
+        self._wheels = 0
+        self.mouse = FakeMouse(self)
+        self.keyboard = FakeKeyboard()
+        self.ready_after_wheels = ready_after_wheels
+
+    def wait_for_timeout(self, ms):
+        pass
+
+    def evaluate(self, script):
+        return False
+
+    def locator(self, sel):
+        return FakeLocator([])
+
+    def get_by_text(self, text, exact=False):
+        return FakeCount(
+            1 if (self.ready_after_wheels is not None and self._wheels >= self.ready_after_wheels) else 0
+        )
+
+
+class FakeCount:
+    def __init__(self, n):
+        self._n = n
+
+    def count(self):
+        return self._n
+
+
+class LazyFinder(StubFinder):
+    """前 N 次扫描为空，之后才命中 —— 模拟秒杀模块懒渲染。"""
+
+    def __init__(self, card, empty_rounds=3, ready_after_wheels=None):
+        super().__init__(card)
+        self.page = FakePage(ready_after_wheels)
+        self._empty_rounds = empty_rounds
+        self.scans = 0
+
+    def _collect_candidates(self, prices):
+        self.scans += 1
+        if self.scans <= self._empty_rounds:
+            return []
+        return super()._collect_candidates(prices)
+
+
+def test_lazy_render():
+    print("\n--- 秒杀模块懒渲染：扫描要带轮询 ---")
+    finder = LazyFinder(FakeCard({"button": [FakeEl("立即抢购")]}), empty_rounds=3)
+    result = finder.find_and_click(["38"], click=False, wait_seconds=5)
+    check("空扫 3 轮后仍能命中", result[0], True)
+    check("确实重扫了多次", finder.scans >= 4, True)
+
+    # 不轮询（wait_seconds=0）时行为保持原样：只扫一次就放弃
+    once = LazyFinder(FakeCard({"button": [FakeEl("立即抢购")]}), empty_rounds=3)
+    check("wait_seconds=0 只扫一次", once.find_and_click(["38"], click=False)[0], False)
+    check("扫描次数为 1", once.scans, 1)
+
+    sweep = LazyFinder(FakeCard({"button": [FakeEl("立即抢购")]}), ready_after_wheels=3)
+    ok = sweep.ensure_full_render(step_ms=0)
+    check("整页滚动可触发秒杀模块", ok, True)
+    check("滚动过程中持续检测", sweep.page.mouse.wheels >= 3, True)
+
+
 def main():
     test_price()
     test_button()
     test_return_contract()
+    test_lazy_render()
 
     if FAILED:
         print(f"\n失败 {len(FAILED)} 项: {FAILED}")

@@ -10,6 +10,7 @@
 「4核4G3M 38元」和「4核4G3M 109元」两张同规格卡，只看规格必然选错。
 """
 import re
+import time
 
 from logger import log
 from utils import match_price_in_card
@@ -116,24 +117,96 @@ class ProductFinder:
         '[class*="goods-card"]',
     )
 
+    # 秒杀模块的判定依据。实测该模块异步渲染，页面 domcontentloaded 之后
+    # 还要 8-16 秒才进 DOM；且不同活动页/改版后 class 名会变，因此同时接受
+    # 「秒杀卡片容器」与「秒杀专属文案（添加提醒 / 已抢）」两种信号。
+    SECKILL_SELECTOR = ".uno3-buy-card-seckill"
+    SECKILL_TEXTS = ("添加提醒", "已抢")
+
     def __init__(self, page, target_config, timeout_config):
         self.page = page
         self.target = target_config
         self.timeout = timeout_config
 
-    def prepare_page(self, tabs, scroll_times):
+    def prepare_page(self, tabs, scroll_times, wait_seckill=True):
         """
         准备页面：点击Tab，滚动加载
 
         Args:
             tabs: 要点击的Tab列表
             scroll_times: 滚动次数
+            wait_seckill: 是否等待秒杀模块渲染完成
         """
         log("展开所有商品Tab...", "INFO")
         self._click_tabs(tabs)
 
         log("滚动页面加载商品...", "INFO")
         self._scroll_page(scroll_times)
+
+        if wait_seckill:
+            log("等待秒杀模块渲染...", "INFO")
+            self.ensure_full_render()
+
+    def ensure_full_render(self, step_ms=300):
+        """从头到底逐屏滚动，触发所有懒加载模块（尤其是秒杀模块）。
+
+        实测：秒杀模块（含目标商品）只有滚动到它附近才会进 DOM。早期版本
+        只做固定次数 PageDown 再扫一次，碰上「没滚到 / 没渲染」的会话就
+        直接报「找不到商品」——同一个页面刷新几次结果都不一样，正是这个
+        原因。这里逐屏滚到底，确保模块真的渲染出来。
+        """
+        try:
+            self.page.keyboard.press("Home")
+            self.page.wait_for_timeout(step_ms)
+        except Exception:
+            pass
+
+        if self._seckill_ready():
+            log("秒杀模块已就绪（首屏）", "INFO")
+            return True
+
+        for i in range(60):
+            try:
+                self.page.mouse.wheel(0, 600)
+            except Exception:
+                break
+            self.page.wait_for_timeout(step_ms)
+            if self._seckill_ready():
+                log(f"秒杀模块已渲染（下滚 {i + 1} 屏）", "INFO")
+                return True
+            try:
+                at_bottom = self.page.evaluate(
+                    "() => window.innerHeight + window.scrollY "
+                    ">= document.documentElement.scrollHeight - 80"
+                )
+            except Exception:
+                at_bottom = False
+            if at_bottom:
+                break
+
+        log("整页滚动完成仍未检测到秒杀模块，按当前 DOM 继续", "WARNING")
+        return False
+
+    def _seckill_ready(self):
+        """秒杀模块是否已渲染（容器出现，或已出现秒杀专属文案）。"""
+        try:
+            if self.page.locator(self.SECKILL_SELECTOR).count() > 0:
+                return True
+        except Exception:
+            pass
+        for text in self.SECKILL_TEXTS:
+            try:
+                if self.page.get_by_text(text, exact=False).count() > 0:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def wait_for_seckill_module(self, timeout_ms=15000):
+        """兼容旧接口：确保秒杀模块已渲染（实现见 ensure_full_render）。"""
+        if self._seckill_ready():
+            return True
+        return self.ensure_full_render(step_ms=300)
 
     def _debug_scan_page(self):
         """调试：全页面扫描关键词"""
@@ -158,7 +231,7 @@ class ProductFinder:
         except Exception as e:
             log(f"扫描异常: {e}", "ERROR")
 
-    def find_and_click(self, target_prices, click=True, require_buyable=True):
+    def find_and_click(self, target_prices, click=True, require_buyable=True, wait_seconds=0):
         """查找目标商品，可选地点击它的购买按钮。
 
         Args:
@@ -170,6 +243,8 @@ class ProductFinder:
                 False —— 赛前预定位用：目标卡在开抢前显示「添加提醒」，
                          此时没有购买按钮是正常的，仍应返回卡片位置用于
                          滚动/高亮，否则预定位会永远失败、主循环空转刷新。
+            wait_seconds: 扫不到候选时最多再等多少秒（秒杀模块异步渲染，
+                          一次扫描很可能什么都看不到）。0 表示只扫一次。
 
         Returns:
             (success, element_or_None) —— 任何分支都返回二元组，
@@ -178,7 +253,19 @@ class ProductFinder:
         """
         log(f"查找目标商品（价格: {target_prices}）...", "INFO")
 
+        deadline = time.time() + max(0, wait_seconds)
         candidates = self._collect_candidates(target_prices)
+        sweep = 0
+        while not candidates and time.time() < deadline:
+            # 秒杀模块是懒渲染的：只等待不滚动可能一直等不到，
+            # 这里「小幅滚动 + 重扫」交替，边滚边找。
+            try:
+                self.page.mouse.wheel(0, 700 if sweep % 4 != 3 else -2100)
+            except Exception:
+                pass
+            sweep += 1
+            self.page.wait_for_timeout(500)
+            candidates = self._collect_candidates(target_prices)
         if not candidates:
             log("没有卡片同时满足「规格 + 价格 + 规格细节」校验，本轮放弃", "WARNING")
             return False, None
