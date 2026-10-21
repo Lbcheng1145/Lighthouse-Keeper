@@ -51,9 +51,9 @@ jobs:
           Write-Host "exe 大小: $([math]::Round((Get-Item $exe).Length/1MB,2)) MB"
 
           # 版本号自检：exe 自己报的版本必须与 tag 一致
-          $reported = (& $exe --version | Out-String).Trim()
+          $reported = (& $exe --version | Select-String 'LighthouseKeeper v').ToString().Trim()
           Write-Host "exe 版本: $reported"
-          if ($reported -notmatch 'v\d+\.\d+\.\d+') { throw "exe --version 输出异常: $reported" }
+          if (-not $reported) { throw "exe --version 没有输出可识别的版本行" }
           if ($env:GITHUB_REF -like 'refs/tags/v*') {
             $tagVer = $env:GITHUB_REF -replace '^refs/tags/v', ''
             if ($reported -notmatch [regex]::Escape($tagVer)) {
