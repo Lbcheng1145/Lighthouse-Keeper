@@ -213,11 +213,45 @@ def test_lazy_render():
     check("滚动过程中持续检测", sweep.page.mouse.wheels >= 3, True)
 
 
+CARD_109 = (
+    "轻量应用服务器 4核4G3M\n建站、Web应用、电商独立站等高性价比选择\n规格\n4核4G3M\n"
+    "地域\n上海\n时长\n1年\n1.4折\n数量\n-\n+\n1.4折\n限1个\n活动价：\n109\n元\n"
+    "日常价：780元\n立即购买"
+)
+CARD_38 = (
+    "轻量应用服务器\n建站、Web应用、电商独立站等高性价比选\n4核4G3M\n300GB 月流量\n"
+    "地域\n广州/上海/北京\n有效期\n自购买一年内有效\n0.5折\n个人专享\n限1个\n"
+    "活动价：\n38\n元\n日常价：780元\n0%\n已抢0%\n添加提醒"
+)
+
+
+def test_test_tier_109():
+    print("\n--- 测试档（4核4G3M 109 元）判据 ---")
+    from product_finder import evaluate_card_text
+
+    target = {
+        "text": "4核4G",
+        "bandwidth": "3M",
+        "duration": ["1年", "一年"],
+        "exclude_specs": ["4核8G", "4核16G", "2核2G", "2核4G", "2核8G"],
+    }
+
+    ok, score, price = evaluate_card_text(CARD_109, target, ["109"])
+    check("109 常售卡命中测试档", ok, True)
+    check("命中价是 109", price, "109")
+    check("命中得分 > 0", score > 0, True)
+
+    check("38 秒杀卡不命中 109", evaluate_card_text(CARD_38, target, ["109"])[0], False)
+    check("109 常售卡不命中正式档 38/39", evaluate_card_text(CARD_109, target, ["38", "39"])[0], False)
+    check("38 秒杀卡仍命中正式档", evaluate_card_text(CARD_38, target, ["38", "39"])[0], True)
+
+
 def main():
     test_price()
     test_button()
     test_return_contract()
     test_lazy_render()
+    test_test_tier_109()
 
     if FAILED:
         print(f"\n失败 {len(FAILED)} 项: {FAILED}")

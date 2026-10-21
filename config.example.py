@@ -8,7 +8,7 @@
 
 # 运行模式
 RUN_MODE = {
-    "test_mode": False,           # True = 抢 79 元测试套餐；False = 抢正式套餐
+    "test_mode": False,           # True = 抢 109 元（4核4G3M 常售）测试；False = 抢正式秒杀套餐
     "monitor_mode": False,
     "buy_times": ["10:00:00", "15:00:00"],  # 秒杀时间点（本地时间）
     # 点击购买后没看到配置弹窗时，是否允许重新定位再点一次。
@@ -22,8 +22,8 @@ TARGET_CONFIG = {
     "bandwidth": "3M",            # 带宽，必须紧跟在 text 之后（如 4核4G3M）
     "duration": ["1年", "一年"],  # 可选，命中加分
     "exclude_specs": ["4核8G", "4核16G", "2核2G", "2核4G", "2核8G"],
-    "test_price": "79",
-    "test_prices_fallback": ["79.00", "38", "39", "180"],
+    "test_price": "109",           # 测试档：4核4G3M 109 元常售套餐
+    "test_prices_fallback": [],    # 留空：不要降级去抢正式秒杀档
     "prod_prices": ["38", "39"],  # 正式模式目标价格
 }
 

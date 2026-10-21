@@ -26,7 +26,7 @@ if sys.stderr is not None:
 # 导入模块
 from config import *
 from logger import log, get_log_file
-from product_finder import ProductFinder
+from product_finder import ProductFinder, BUY_BUTTON_TEXTS, NOT_BUY_BUTTON_TEXTS
 from purchase_flow import PurchaseFlow
 
 
@@ -185,9 +185,28 @@ class TencentCloudBot:
                     success, buy_button = self._find_target(finder, click=False, wait_seconds=5)
 
                 if not success or buy_button is None:
-                    # 兜底必须用赛前锁定的旧句柄，而不是刚返回的空值
-                    log("重试后仍未定位到可购买按钮，尝试赛前锁定的旧句柄...", "WARNING")
-                    buy_button = pre_button
+                    # 兜底只能用「真正的购买控件」。赛前锁定的往往是卡片本身
+                    # （那时按钮还叫「添加提醒」），点卡片不会下单，反而会点到
+                    # 卡片里的提醒按钮、在你账号上挂一条提醒 —— 实测日志就出现过
+                    # 这种情况（卡片文案变成「取消提醒」）。
+                    if self._is_buy_control(pre_button):
+                        log("重试后仍未定位到可购买按钮，复用赛前锁定的购买按钮句柄", "WARNING")
+                        buy_button = pre_button
+                    else:
+                        log("赛前锁定的是卡片而非购买按钮，不复用（点卡片不会下单）", "WARNING")
+                        buy_button = None
+
+                if buy_button is None:
+                    # 秒杀按钮可能在开抢瞬间才出现，这里再轮询等一段，而不是直接放弃
+                    log("未拿到购买按钮，继续轮询等待按钮出现（最多 15 秒）...", "WARNING")
+                    deadline = time.time() + 15
+                    while time.time() < deadline:
+                        self.page.wait_for_timeout(400)
+                        ok, cand = self._find_target(finder, click=False)
+                        if ok and cand is not None:
+                            buy_button = cand
+                            log("购买按钮已出现，继续购买流程", "SUCCESS")
+                            break
 
                 if buy_button is None:
                     log("没有任何可用按钮，放弃本次抢购", "ERROR")
@@ -482,29 +501,35 @@ class TencentCloudBot:
         return flow.execute(buy_button)
     
     def _get_target_prices(self):
-        """获取目标价格"""
+        """获取目标价格（扁平列表，购买流程侧使用）"""
+        target = self.config["target"]
         if self.config["run_mode"]["test_mode"]:
-            prices = [self.config["target"]["test_price"]]
-            if "test_prices_fallback" in self.config["target"]:
-                prices.extend(self.config["target"]["test_prices_fallback"])
-            return prices
-        else:
-            return self.config["target"]["prod_prices"]
+            prices = []
+            if target.get("test_price"):
+                prices.append(target["test_price"])
+            prices.extend(target.get("test_prices_fallback") or [])
+            return prices or list(target["prod_prices"])
+        return target["prod_prices"]
 
     def _get_target_price_tiers(self):
         """按优先级分组返回目标价格。
 
-        测试模式的 fallback 价格（38/39/180）原本与 79 混在同一个列表里，
-        页面上没有 79 元档时就会去抢 38 元档 —— 测试模式本意只是验证流程，
-        却可能买成正式商品。改为分层：先用 79 找，确实找不到才降级。
+        测试模式的价格原本与 fallback 混在同一个列表里，页面上没有测试档
+        时就会去抢最便宜的那档（可能是正式秒杀套餐）。改为分层：先用
+        `test_price` 找，确实找不到才降级到 fallback；fallback 为空时
+        直接报错，不再自动换档（换档意味着买成别的东西）。
         """
         target = self.config["target"]
         if self.config["run_mode"]["test_mode"]:
-            tiers = [[target.get("test_price", "79")]]
+            tiers = []
+            test_price = target.get("test_price")
+            if test_price:
+                tiers.append([test_price])
             fallback = target.get("test_prices_fallback") or []
             if fallback:
                 tiers.append(list(fallback))
-            return tiers
+            # 都没配就退回正式档，避免 test_mode 开着却完全找不到商品
+            return tiers or [list(target["prod_prices"])]
         return [list(target["prod_prices"])]
 
     def _find_target(self, finder, click=False, require_buyable=True, wait_seconds=0):
@@ -521,6 +546,22 @@ class TencentCloudBot:
             if result[0]:
                 return result
         return result
+
+    @staticmethod
+    def _is_buy_control(element):
+        """元素是否是可以直接下单的购买控件（而不是整张卡片或提醒按钮）。"""
+        if element is None:
+            return False
+        try:
+            tag = element.evaluate("el => el.tagName")
+            text = (element.inner_text() or "").strip()
+        except Exception:
+            return False
+        if tag not in ("BUTTON", "A"):
+            return False
+        if any(bad in text for bad in NOT_BUY_BUTTON_TEXTS):
+            return False
+        return any(good in text for good in BUY_BUTTON_TEXTS)
     
     def _keep_browser_open(self):
         """保持浏览器打开"""
