@@ -51,13 +51,16 @@ jobs:
           $others = Get-ChildItem dist-gui | Where-Object { $_.Name -ne "LighthouseKeeper.exe" }
           if ($others) { throw "dist-gui 里多了文件: $($others.Name -join ', ')" }
 
-          # 单文件下 Playwright 驱动能否启动 + 页面渲染（不碰账号、不下单）
+          # 单文件下 Playwright 驱动能否启动 + tkinter 能否建窗口（不碰账号、不下单）
           & $exe --self-check | Out-Null
           $report = "dist-gui/self-check.log"
           if (-not (Test-Path $report)) { throw "自检没有产出 self-check.log" }
           Get-Content $report | Write-Host
           if (-not (Select-String -Path $report -Pattern "SELF-CHECK OK" -Quiet)) {
-            throw "自检失败，见上方输出"
+            throw "浏览器驱动自检失败，见上方输出"
+          }
+          if (-not (Select-String -Path $report -Pattern "GUI-CHECK OK" -Quiet)) {
+            throw "tkinter 自检失败（单文件里 tcl/tk 数据没打进去？），见上方输出"
           }
 
           # 文件属性里的版本必须与 config.VERSION 一致

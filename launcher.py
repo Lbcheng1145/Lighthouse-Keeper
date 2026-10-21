@@ -93,7 +93,23 @@ def _self_check() -> int:
         lines.append(f"SELF-CHECK OK playwright=ok render={text}")
     except Exception:
         ok = False
-        lines.append("SELF-CHECK FAIL")
+        lines.append("SELF-CHECK FAIL playwright")
+        lines.append(traceback.format_exc())
+
+    # 单文件打包最容易漏的是 tcl/tk 数据目录：漏了就只能在真正开窗时才发现。
+    # 这里建一个窗口再立刻隐藏销毁，验证 tkinter 可用且不打扰用户。
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.withdraw()
+        tk.Frame(root).pack()
+        root.update_idletasks()
+        root.destroy()
+        lines.append("GUI-CHECK OK tkinter=ok")
+    except Exception:
+        ok = False
+        lines.append("GUI-CHECK FAIL tkinter")
         lines.append(traceback.format_exc())
 
     report = "\n".join(lines) + "\n"
