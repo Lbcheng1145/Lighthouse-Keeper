@@ -41,3 +41,8 @@ dist/
 browser-data/
 session-state.json
 config.local.py
+
+# 图形界面分支的构建产物
+dist-gui/
+build-gui/
+self-check.log

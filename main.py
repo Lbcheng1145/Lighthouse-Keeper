@@ -6,6 +6,7 @@ import sys
 import io
 import os
 import time
+import threading
 import datetime
 from pathlib import Path
 
@@ -139,7 +140,18 @@ class TencentCloudBot:
         self.browser = None
         self.context = None
         self.page = None
-    
+        # 停止信号：图形界面的「停止」按钮会置位，各等待循环据此退出。
+        # 纯命令行模式下没人置位，行为与以前完全一致。
+        self._stop_event = threading.Event()
+
+    def stop(self):
+        """请求停止（可从其他线程调用）。"""
+        self._stop_event.set()
+
+    @property
+    def stopped(self):
+        return self._stop_event.is_set()
+
     def run(self):
         """主运行流程"""
         self._print_banner()
@@ -161,6 +173,10 @@ class TencentCloudBot:
             # 2. 提前定位商品 (找不到就一直找，直到找到为止)
             buy_button = None
             while not buy_button:
+                if self.stopped:
+                    log("已取消：停止定位", "WARNING")
+                    self._keep_browser_open()
+                    return
                 buy_button = self._locate_target_product(finder)
                 if not buy_button:
                     log("未找到目标商品，5秒后刷新重试...", "WARNING")
@@ -201,6 +217,9 @@ class TencentCloudBot:
                     log("未拿到购买按钮，继续轮询等待按钮出现（最多 15 秒）...", "WARNING")
                     deadline = time.time() + 15
                     while time.time() < deadline:
+                        if self.stopped:
+                            log("已取消：停止等待购买按钮", "WARNING")
+                            break
                         self.page.wait_for_timeout(400)
                         ok, cand = self._find_target(finder, click=False)
                         if ok and cand is not None:
@@ -391,6 +410,11 @@ class TencentCloudBot:
         refreshed_times = set()
         
         while True:
+            # 停止请求（GUI「停止」按钮）
+            if self.stopped:
+                log("已取消等待抢购时间", "WARNING")
+                return False
+
             # 超时检查
             if time.time() - start_time > max_wait:
                 log("等待超时（2小时）", "ERROR")
@@ -421,11 +445,13 @@ class TencentCloudBot:
                     if handler.detect_login_required(max_attempts=1):
                         log("刷新后发现登录态失效！请立即扫码！", "WARNING")
                         # 循环检测直到登录
-                        while True:
+                        while not self.stopped:
                             if handler.check_login_success_simple():
                                 log("登录成功！", "SUCCESS")
                                 break
                             time.sleep(1)
+                        if self.stopped:
+                            return False
                     else:
                         log("刷新后登录态正常", "SUCCESS")
                         
@@ -564,11 +590,11 @@ class TencentCloudBot:
         return any(good in text for good in BUY_BUTTON_TEXTS)
     
     def _keep_browser_open(self):
-        """保持浏览器打开"""
-        log("浏览器保持打开，按 Ctrl+C 退出", "INFO")
+        """保持浏览器打开（收到停止请求或窗口被关闭时退出）"""
+        log("浏览器保持打开，按 Ctrl+C 或点「停止」退出", "INFO")
         try:
             # 用户直接关掉浏览器窗口时，context 会失效，需及时退出并落盘
-            while True:
+            while not self.stopped:
                 if self.context is not None:
                     try:
                         if not self.context.pages:
