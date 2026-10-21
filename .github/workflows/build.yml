@@ -33,6 +33,10 @@ jobs:
       - name: Compile check
         run: python -m compileall -q .
 
+      # 选品判据的回归测试：防止「抢购时刻选错商品」这类缺陷复发
+      - name: Matcher tests
+        run: python scripts/test_product_matcher.py
+
       - name: Build with PyInstaller
         run: pyinstaller LighthouseKeeper.spec --noconfirm
 

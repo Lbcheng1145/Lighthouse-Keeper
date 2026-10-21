@@ -173,22 +173,26 @@ class TencentCloudBot:
             if self._wait_for_buy_time():
                 # 4. 执行购买
                 log("时间到！立即重新定位并点击...", "INFO")
-                
-                # 直接调用 finder 重新查找并点击 (click=True)
-                # 因为页面元素可能已经刷新，使用预定位的按钮句柄可能失效
-                # 现在的 finder 足够快，且页面已经滚动到位，能瞬间找到
+
+                # 抢购时刻只「定位」不点击：点击统一交给 purchase_flow.execute，
+                # 否则同一个按钮会被点两次（可能开两个标签页、下两个单）。
                 target_prices = self._get_target_prices()
-                success, buy_button = finder.find_and_click(target_prices, click=True)
-                
-                if not success:
-                    log("抢购时刻无法定位商品，尝试使用旧句柄兜底...", "WARNING")
-                    # 如果重新找失败了（极其罕见），才尝试用旧的
-                    try:
-                        buy_button.click(force=True)
-                        success = True
-                    except:
-                        log("旧句柄也失效", "ERROR")
-                        return
+                pre_button = buy_button  # 赛前锁定的句柄，刷新后可能已失效
+                success, buy_button = finder.find_and_click(target_prices, click=False)
+
+                if not success or buy_button is None:
+                    log("抢购时刻未定位到可购买按钮，稍后重试一次...", "WARNING")
+                    self.page.wait_for_timeout(300)
+                    success, buy_button = finder.find_and_click(target_prices, click=False)
+
+                if not success or buy_button is None:
+                    # 兜底必须用赛前锁定的旧句柄，而不是刚返回的空值
+                    log("重试后仍未定位到可购买按钮，尝试赛前锁定的旧句柄...", "WARNING")
+                    buy_button = pre_button
+
+                if buy_button is None:
+                    log("没有任何可用按钮，放弃本次抢购", "ERROR")
+                    return
 
                 success = self.purchase_flow.execute(buy_button)
                 
@@ -237,8 +241,11 @@ class TencentCloudBot:
         )
         
         target_prices = self._get_target_prices()
-        # 查找但不点击 (click=False)
-        success, button = finder.find_and_click(target_prices, click=False)
+        # 查找但不点击 (click=False)；开抢前按钮可能还是「添加提醒」，
+        # 此时只要求锁定卡片位置，不要求此刻可购买。
+        success, button = finder.find_and_click(
+            target_prices, click=False, require_buyable=False
+        )
         
         if success and button:
             log("已锁定目标商品！", "SUCCESS")
@@ -360,7 +367,9 @@ class TencentCloudBot:
         start_time = time.time()
         
         last_refresh_time = time.time()
-        refreshed_before_snipe = False  # 是否已执行赛前刷新
+        # 已执行赛前刷新的时间点。多个 buy_times 时每个时间点都要各刷新一次，
+        # 早期版本用单个布尔量，第二个时间点不会刷新，页面可能已过期/改版。
+        refreshed_times = set()
         
         while True:
             # 超时检查
@@ -380,7 +389,7 @@ class TencentCloudBot:
                 diff = (target - now).total_seconds()
                 
                 # --- 策略：赛前 2 分钟刷新保活 ---
-                if 60 < diff < 120 and not refreshed_before_snipe:
+                if 60 < diff < 120 and buy_time not in refreshed_times:
                     log(f"距离抢购还有 {int(diff)} 秒，执行赛前刷新保活...", "INFO")
                     self.page.reload()
                     self.page.wait_for_load_state('domcontentloaded')
@@ -409,7 +418,9 @@ class TencentCloudBot:
                     # 但在这里我们直接调用finder逻辑即可，简单点
                     finder.prepare_page(self.config["page"]["tabs"], self.config["page"]["scroll_times"])
                     target_prices = self._get_target_prices()
-                    success, button = finder.find_and_click(target_prices, click=False)
+                    success, button = finder.find_and_click(
+                        target_prices, click=False, require_buyable=False
+                    )
                     
                     if success and button:
                         log("赛前重新定位成功，滚动并锁定...", "SUCCESS")
@@ -422,7 +433,7 @@ class TencentCloudBot:
                     else:
                         log("赛前重新定位失败！将在抢购时尝试现场抓取", "WARNING")
 
-                    refreshed_before_snipe = True
+                    refreshed_times.add(buy_time)
                     log("赛前准备完成，继续倒计时...", "INFO")
 
                 # --- 策略：准点触发 ---

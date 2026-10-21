@@ -135,32 +135,27 @@ class PurchaseFlow:
         
         # 获取价格配置
         target_prices = self._get_target_prices()
-        
-        # 查找商品
+
+        # 查找商品：复用 ProductFinder 的严格判据（规格 + 价格 + 规格细节），
+        # 不再用 get_by_text 遍历祖先 div —— 那套判据与主流程不一致，
+        # 且只查前 20 个元素，重试路径更容易点到相邻规格。
         finder = ProductFinder(self.page, self.config["target"], self.timeout)
-        elements = self.page.get_by_text(self.config["target"]["text"], exact=False).all()
-        log(f"找到 {len(elements)} 个元素", "DEBUG")
-        
-        # 查找并点击（检查更多元素，避免漏掉）
-        # 之前只检查前5个，现在放宽到前20个，确保覆盖
-        for idx, element in enumerate(elements[:20]):
-            button = finder._check_element(element, target_prices, idx)
-            if button:
-                log("重新找到商品，点击购买", "SUCCESS")
-                # 重新购买时同样使用强制点击，防止意外遮挡
-                try:
-                    button.click(force=True)
-                except Exception as e:
-                    log(f"重新点击异常，尝试常规点击: {e}", "WARNING")
-                    button.click()
-                
-                # 极速模式：不再死等3秒，而是等待DOM加载
-                # wait_with_progress(self.page, 3, "等待页面响应")
-                self.page.wait_for_load_state('domcontentloaded')
-                return self._select_image()
-        
-        log("重新定位失败", "ERROR")
-        return False
+        ok, button = finder.find_and_click(target_prices, click=False)
+
+        if not ok or button is None:
+            log("重新定位失败", "ERROR")
+            return False
+
+        log("重新找到商品，点击购买", "SUCCESS")
+        try:
+            button.click(force=True)
+        except Exception as e:
+            log(f"重新点击异常，尝试常规点击: {e}", "WARNING")
+            button.click()
+
+        # 极速模式：不再死等3秒，而是等待DOM加载
+        self.page.wait_for_load_state('domcontentloaded')
+        return self._select_image()
     
     def _select_image(self):
         """选择镜像并提交订单"""

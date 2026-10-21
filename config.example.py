@@ -16,7 +16,9 @@ RUN_MODE = {
 # 目标商品
 TARGET_CONFIG = {
     "text": "4核4G",              # 商品特征文字，需与活动页描述一致
-    "bandwidth": "3M",
+    "bandwidth": "3M",            # 带宽，必须紧跟在 text 之后（如 4核4G3M）
+    "duration": ["1年", "一年"],  # 可选，命中加分
+    "exclude_specs": ["4核8G", "4核16G", "2核2G", "2核4G", "2核8G"],
     "test_price": "79",
     "test_prices_fallback": ["79.00", "38", "39", "180"],
     "prod_prices": ["38", "39"],  # 正式模式目标价格

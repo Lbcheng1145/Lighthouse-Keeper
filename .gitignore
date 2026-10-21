@@ -12,6 +12,8 @@ logs/
 # 测试和临时文件
 debug_*.py
 test_*.py
+# scripts/ 下的回归测试由 CI 执行，必须入库
+!scripts/test_*.py
 *_backup.*
 fix_*.py
 scan_*.py
