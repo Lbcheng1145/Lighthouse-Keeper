@@ -39,18 +39,29 @@ class PurchaseFlow:
             self.login_handler.page = opened_page
             log("后续流程切换到新标签页", "INFO")
 
-        # 2. 处理登录
-        # 注意：如果是配置弹窗模式，登录也会在弹窗之上覆盖一层，处理完登录后，配置弹窗应该还在下面
+        # 2. 先看有没有配置弹窗 —— 有就说明登录态本来就是好的
+        #
+        # 能展开「选择地域/时长/镜像」的配置弹窗，本身就已经证明登录有效，
+        # 这时候再去跑一遍登录检测纯属浪费：实测日志里出现过
+        # 「点击购买按钮后: 可见元素=['配置弹窗']」紧接着
+        # 「检测登录状态... → 忽略弱登录提示 → 3 秒后才发现弹窗」的情况。
+        # 抢购时刻这几秒就是丢单，所以顺序必须反过来：先认弹窗，再谈登录。
+        if self._wait_for_dialog(3000):
+            log("配置弹窗已出现（登录态可用），直接进入配置流程", "SUCCESS")
+            self._warn_if_dialog_asks_login()
+            return self._select_image()
+
+        # 3. 没有弹窗，这时才需要判断是不是被要求登录
         # 点完之后先把现场记下来：以后再出现「点了要登录」时，日志里能看出
         # 到底停在哪个页面、有没有弹窗/登录框，不用再靠猜。
-        self._log_page_state("点击购买按钮后")
+        self._log_page_state("点击购买按钮后（未出现配置弹窗）")
         login_success = self.login_handler.handle_login_flow(old_url)
 
         if not login_success:
             log("登录处理可能未完成，尝试继续操作...", "WARNING")
         self._log_page_state("登录处理后")
 
-        # 3. 检查状态
+        # 4. 登录处理完（或本来就不需要），再看弹窗是否出现
         if self._wait_for_dialog(5000):
             log("检测到配置弹窗 (.uno3-dialog)，准备选择镜像", "INFO")
             self._warn_if_dialog_asks_login()
@@ -169,7 +180,7 @@ class PurchaseFlow:
                 if len(context.pages) > pages_before:
                     new_page = context.pages[-1]
                     try:
-                        new_page.wait_for_load_state('domcontentloaded')
+                        new_page.wait_for_load_state('domcontentloaded', timeout=5000)
                     except Exception:
                         pass
                     log(f"检测到新标签页: {new_page.url}", "INFO")
@@ -223,39 +234,60 @@ class PurchaseFlow:
             log(f"重新点击异常，尝试常规点击: {e}", "WARNING")
             button.click()
 
-        # 极速模式：不再死等3秒，而是等待DOM加载
-        self.page.wait_for_load_state('domcontentloaded')
+        # 极速模式：不再死等3秒，而是等待DOM加载（必须有上限，
+        # 否则页面一直在加载时这里会卡满默认 30 秒）
+        try:
+            self.page.wait_for_load_state('domcontentloaded', timeout=5000)
+        except Exception:
+            log("页面仍在加载，继续尝试处理配置弹窗", "DEBUG")
         return self._select_image()
     
     def _select_image(self):
-        """选择镜像并提交订单"""
-        log("选择镜像: OpenClaw/Clawdbot...", "INFO")
-        
-        # 极速等待：配置页通常加载较快，缩短等待时间
-        self.page.wait_for_load_state('domcontentloaded')
-        
-        # 1. 选择镜像
+        """在配置弹窗里选择镜像并提交订单。
+
+        坑 1：`wait_for_load_state('domcontentloaded')` 不给超时会按默认 30 秒等，
+        点完购买后如果页面还在加载，表现就是「卡在配置页不动」。
+        坑 2：镜像是弹窗里的选项，早期在整页范围里找，容易命中页面其它同名文字。
+        """
+        log("在配置弹窗里选择镜像...", "INFO")
+
+        try:
+            self.page.wait_for_load_state('domcontentloaded', timeout=5000)
+        except Exception:
+            log("页面仍在加载中，先继续处理配置弹窗", "DEBUG")
+
+        dialog = self._find_dialog_scope()
+        scope = dialog if dialog is not None else self.page
+
+        # 1. 选择镜像（先在弹窗内找，找不到再退回整页）
         image_found = False
         for image_name in self.config["images"]:
-            try:
-                # 缩短超时时间，快速尝试
-                img_el = self.page.locator(f'text={image_name}').first
-                if img_el.is_visible(timeout=500):
-                    log(f"找到镜像: {image_name}", "SUCCESS")
-                    img_el.click()
-                    image_found = True
-                    break
-            except:
-                continue
-        
+            for candidate_scope, label in ((scope, "弹窗内"), (self.page, "整页")):
+                try:
+                    img_el = candidate_scope.locator(f'text={image_name}').first
+                    if img_el.is_visible(timeout=800):
+                        log(f"找到镜像（{label}）: {image_name}", "SUCCESS")
+                        img_el.click()
+                        image_found = True
+                        break
+                except Exception:
+                    continue
+            if image_found:
+                break
+
         if not image_found:
-            log("未找到指定镜像，默认使用第一个或手动选择", "WARNING")
-        
-        # 2. 同意协议并提交
+            log("未找到指定镜像，按默认选择继续", "WARNING")
+
+        # 2. 提交
         return self._submit_order()
 
     # 提交按钮文案：只认明确的提交动作
     SUBMIT_TEXTS = ("立即购买", "确认购买", "立即抢购", "提交订单", "确认下单", "确定")
+
+    # 配置弹窗里等「提交按钮可用」的上限。
+    # 有些商品的提交按钮要等异步校验（库存、地域、镜像）结束才解除禁用，
+    # 早期实现只找一次、找不到就放弃 —— 表现就是「卡在配置页」。
+    SUBMIT_WAIT_SECONDS = 10
 
     def _submit_order(self):
         """提交订单。
@@ -281,9 +313,10 @@ class PurchaseFlow:
                 log("未找到配置弹窗，改为在非活动页查找提交按钮", "WARNING")
                 scope = self.page
 
-            btn = self._find_submit_button(scope)
+            btn = self._wait_submit_button(scope)
             if btn is None:
-                log(f"第 {attempt + 1} 次尝试：未找到提交按钮", "WARNING")
+                log(f"第 {attempt + 1} 次尝试：等不到可用的提交按钮", "WARNING")
+                self._dump_dialog_state(scope)
                 continue
 
             try:
@@ -308,6 +341,55 @@ class PurchaseFlow:
 
         log("未确认提交成功，请人工点击（不再自动重复点击，避免重复下单）", "WARNING")
         return False
+
+    def _wait_submit_button(self, scope):
+        """轮询等待提交按钮变为可点击。
+
+        按钮一开始可能是禁用态（要等库存/地域/镜像校验），
+        这里给它一点时间，而不是看了一眼就判定失败。
+        """
+        deadline_attempts = max(1, int(self.SUBMIT_WAIT_SECONDS / 0.5))
+        for i in range(deadline_attempts):
+            btn = self._find_submit_button(scope)
+            if btn is not None:
+                return btn
+            if i == 4:
+                log("提交按钮暂不可用，继续等待校验完成...", "DEBUG")
+            try:
+                self.page.wait_for_timeout(500)
+            except Exception:
+                return None
+        return None
+
+    def _dump_dialog_state(self, scope):
+        """把配置弹窗的现场写进日志，卡住时能看出到底缺什么。"""
+        try:
+            text = scope.inner_text()
+        except Exception:
+            text = ""
+        flat = " | ".join(x.strip() for x in (text or "").splitlines() if x.strip())
+        if flat:
+            log(f"配置弹窗内容: {flat[:400]}", "WARNING")
+
+        buttons = []
+        try:
+            for b in scope.locator("button").all():
+                try:
+                    if b.is_visible(timeout=200):
+                        label = (b.inner_text() or "").strip().replace("\n", " ")
+                        disabled = "禁用" if self._looks_disabled(b) else "可用"
+                        buttons.append(f"{label or '(无文字)'}[{disabled}]")
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        if buttons:
+            log(f"配置弹窗按钮: {buttons[:8]}", "WARNING")
+        log(
+            "提示：若按钮一直是禁用态，通常是还有配置项没选（镜像/地域/时长）。"
+            "请在浏览器窗口里选好后，点「停止」再「开始抢购」重试。",
+            "WARNING",
+        )
 
     def _find_dialog_scope(self):
         """返回可见的配置弹窗；没有则返回 None。"""

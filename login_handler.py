@@ -72,7 +72,7 @@ class LoginHandler:
         url = (self.page.url if url is None else url) or ""
         return any(kw in url.lower() for kw in ['login', 'passport', 'oauth'])
 
-    def detect_login_required(self, max_attempts=3):
+    def detect_login_required(self, max_attempts=1):
         """检测是否需要登录。
 
         判定顺序（宁放过、不误判）：
@@ -86,7 +86,9 @@ class LoginHandler:
         5 分钟扫码等待，把抢购机会彻底耗掉（实测日志 15:23:17 起）。
         """
         log("检测登录状态...", "DEBUG")
-        detect_ms = self.timeout.get("login_detect", 800) if self.timeout else 800
+        # 抢购时刻时间很贵：每个选择器最多等 400ms，够判断可见性了
+        base_ms = self.timeout.get("login_detect", 800) if self.timeout else 800
+        detect_ms = min(base_ms, 400)
 
         for attempt in range(max_attempts):
             log(f"第 {attempt + 1}/{max_attempts} 次检测", "DEBUG")
@@ -254,9 +256,9 @@ class LoginHandler:
         need_login = self.detect_login_required()
         
         if not need_login:
-            log("无需登录，等待页面跳转...", "INFO")
-            self.page.wait_for_load_state('domcontentloaded')
-            wait_with_progress(self.page, 3, "页面稳定等待")
+            # 这里原本会「等页面稳定 3 秒」，但调用方紧接着还会等配置弹窗，
+            # 抢购时刻白白多花 3 秒，直接返回。
+            log("未检测到登录需求，继续流程", "INFO")
             return True
 
         # 给了强证据也不代表真能扫码：某些页面只有「请登录」提示而没有二维码。

@@ -238,12 +238,159 @@ def test_buy_control_guard():
     check("None 安全", TencentCloudBot._is_buy_control(None), False)
 
 
+
+def test_submit_button_wait():
+    print("\n--- 配置弹窗：等提交按钮可用 ---")
+    from purchase_flow import PurchaseFlow
+
+    class Btn:
+        def __init__(self, text="立即购买", disabled=False):
+            self._text = text
+            self._disabled = disabled
+            self.clicked = 0
+
+        def inner_text(self):
+            return self._text
+
+        def is_visible(self, timeout=None):
+            return True
+
+        def is_disabled(self):
+            return self._disabled
+
+        def get_attribute(self, name):
+            return "is-disabled" if self._disabled else ""
+
+        def click(self, **kwargs):
+            self.clicked += 1
+
+        def highlight(self):
+            pass
+
+    class Loc:
+        def __init__(self, els):
+            self._els = els
+
+        @property
+        def first(self):
+            return self._els[0]
+
+        def all(self):
+            return self._els
+
+    class Scope:
+        """第 enable_after 次查询之后按钮才可用。"""
+
+        def __init__(self, enable_after):
+            self.queries = 0
+            self.enable_after = enable_after
+
+        def locator(self, sel):
+            self.queries += 1
+            enabled = self.queries > self.enable_after
+            return Loc([Btn(disabled=not enabled)])
+
+        def inner_text(self):
+            return "配置选择 镜像 地域"
+
+    class Page:
+        url = "https://cloud.tencent.com/act/pro/featured-202607"
+        context = None
+
+        def wait_for_timeout(self, ms):
+            pass
+
+    def make_flow():
+        cfg = {"target": {"prod_prices": ["38"]}, "page": {}, "run_mode": {},
+               "images": []}
+        flow = PurchaseFlow(Page(), cfg, {})
+        flow.SUBMIT_WAIT_SECONDS = 5
+        return flow
+
+    # 1) 按钮第 1 次就可用 -> 立刻返回
+    flow = make_flow()
+    btn = flow._wait_submit_button(Scope(enable_after=0))
+    check("按钮可用时立即返回", btn is not None, True)
+
+    # 2) 按钮前几次禁用、之后可用 -> 能等到（这就是「卡在配置页」的场景）
+    flow = make_flow()
+    scope = Scope(enable_after=4)
+    btn = flow._wait_submit_button(scope)
+    check("等到了后来才启用的按钮", btn is not None, True)
+    check("确实重试了多次", scope.queries > 4, True)
+
+    # 3) 一直禁用 -> 超时返回 None，而不是抛异常或死循环
+    flow = make_flow()
+    btn = flow._wait_submit_button(Scope(enable_after=10 ** 6))
+    check("一直禁用时超时返回 None", btn, None)
+
+    # 4) 整条提交路径：按钮延迟启用时最终能点下去
+    flow = make_flow()
+    scope = Scope(enable_after=3)
+    flow._find_dialog_scope = lambda: scope
+    flow._wait_submitted = lambda url: True
+    ok = flow._submit_order()
+    check("延迟启用场景最终提交成功", ok, True)
+
+
+
+def test_dialog_first_then_login():
+    print("\n--- 配置弹窗优先，跳过登录检测 ---")
+    from purchase_flow import PurchaseFlow
+
+    class Page:
+        url = "https://cloud.tencent.com/act/pro/featured-202607"
+        context = None
+
+        def wait_for_timeout(self, ms):
+            pass
+
+    class FakeLogin:
+        page = None
+
+        def __init__(self, log):
+            self.log = log
+
+        def handle_login_flow(self, url):
+            self.log["login"] += 1
+            return True
+
+    cfg = {"target": {"prod_prices": ["38"]}, "page": {}, "run_mode": {}, "images": []}
+
+    def build(dialog_results):
+        flow = PurchaseFlow(Page(), cfg, {})
+        log = {"login": 0, "select": 0, "log_state": 0}
+        results = list(dialog_results)
+        flow._click_buy_button = lambda btn: None
+        flow._wait_for_dialog = lambda ms: results.pop(0) if results else False
+        flow._warn_if_dialog_asks_login = lambda: None
+        flow._log_page_state = lambda label: log.__setitem__("log_state", log["log_state"] + 1)
+        flow._select_image = lambda: log.__setitem__("select", log["select"] + 1) or True
+        flow.login_handler = FakeLogin(log)
+        return flow, log
+
+    # 1) 点完购买配置弹窗立刻出现 -> 完全不该走登录检测
+    flow, log = build([True])
+    ok = flow.execute(object())
+    check("弹窗已出现时流程继续", ok, True)
+    check("弹窗已出现时不检测登录", log["login"], 0)
+    check("弹窗已出现时进入选镜像", log["select"], 1)
+
+    # 2) 没有弹窗 -> 才去处理登录（这里模拟登录成功后弹窗出现）
+    flow2, log2 = build([False, True])
+    flow2.execute(object())
+    check("无弹窗时才检测登录", log2["login"], 1)
+    check("登录处理后继续选镜像", log2["select"], 1)
+
+
 def main():
     test_click_once()
     test_submit_scope()
     test_no_retry_by_default()
     test_price_tiers()
     test_buy_control_guard()
+    test_submit_button_wait()
+    test_dialog_first_then_login()
 
     if FAILED:
         print(f"\n失败 {len(FAILED)} 项: {FAILED}")
