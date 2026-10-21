@@ -41,14 +41,19 @@ class PurchaseFlow:
 
         # 2. 处理登录
         # 注意：如果是配置弹窗模式，登录也会在弹窗之上覆盖一层，处理完登录后，配置弹窗应该还在下面
+        # 点完之后先把现场记下来：以后再出现「点了要登录」时，日志里能看出
+        # 到底停在哪个页面、有没有弹窗/登录框，不用再靠猜。
+        self._log_page_state("点击购买按钮后")
         login_success = self.login_handler.handle_login_flow(old_url)
 
         if not login_success:
             log("登录处理可能未完成，尝试继续操作...", "WARNING")
+        self._log_page_state("登录处理后")
 
         # 3. 检查状态
         if self._wait_for_dialog(5000):
             log("检测到配置弹窗 (.uno3-dialog)，准备选择镜像", "INFO")
+            self._warn_if_dialog_asks_login()
             return self._select_image()
 
         # 如果没有弹窗，再检查是否还在活动页
@@ -78,6 +83,42 @@ class PurchaseFlow:
 
         # 如果URL变了，也继续
         return self._select_image()
+
+    def _warn_if_dialog_asks_login(self):
+        """配置弹窗里若有「请登录」字样，明确报错而不是静默失败。"""
+        try:
+            text = self.page.locator(".uno3-dialog").first.inner_text()
+        except Exception:
+            return
+        for keyword in ("登录后", "请登录", "扫码登录", "登录购买", "登录继续"):
+            if keyword in text:
+                log(
+                    f"配置页要求登录（出现「{keyword}」）："
+                    "请在浏览器窗口里完成登录，然后点「停止」再「开始抢购」重试",
+                    "ERROR",
+                )
+                return
+
+    def _log_page_state(self, label):
+        """记录当前页面状态，便于排查「点了没反应 / 提示登录」这类问题。"""
+        checks = (
+            (".uno3-dialog", "配置弹窗"),
+            (".accsys-tp-modal", "登录弹窗"),
+            ("#accsys-tp-overlay-root", "登录遮罩"),
+            ('img[src*="qrcode"]', "二维码"),
+        )
+        found = []
+        for selector, name in checks:
+            try:
+                if self.page.locator(selector).first.is_visible(timeout=200):
+                    found.append(name)
+            except Exception:
+                continue
+        try:
+            url = self.page.url
+        except Exception:
+            url = "(读不到)"
+        log(f"{label}: URL={url} | 可见元素={found or '无'}", "DEBUG")
 
     def _wait_for_dialog(self, timeout_ms):
         """轮询等待配置弹窗出现。"""
