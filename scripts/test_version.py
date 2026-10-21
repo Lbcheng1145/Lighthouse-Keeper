@@ -11,6 +11,13 @@ import re
 import sys
 from pathlib import Path
 
+# Windows CI 的 stdout 默认是 cp1252，直接打印中文会 UnicodeEncodeError。
+# 这里显式切到 UTF-8，不依赖 logger 的副作用。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
