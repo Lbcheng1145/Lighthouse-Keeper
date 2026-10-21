@@ -16,8 +16,8 @@ OWNER = "Lbcheng1145"
 REPO = "Lighthouse-Keeper"
 API = f"https://api.github.com/repos/{OWNER}/{REPO}"
 
-KEEP = os.environ.get("KEEP_TAG", "v1.1.0")
-CANDIDATES = ["v1.0.0", "v1.0.1", "v1.0.2", "v1.0.3", "v1.1.0"]
+KEEP = os.environ.get("KEEP_TAG", "v1.2.0")
+CANDIDATES = ["v1.0.0", "v1.0.1", "v1.0.2", "v1.0.3", "v1.1.0", "v1.2.0"]
 
 
 def call(method, url):
