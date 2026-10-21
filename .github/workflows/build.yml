@@ -39,7 +39,6 @@ jobs:
           python scripts/test_product_matcher.py
           python scripts/test_purchase_flow.py
           python scripts/test_login_detect.py
-          python scripts/test_payment_qr.py
           python scripts/test_gui.py
           python scripts/test_version.py
 

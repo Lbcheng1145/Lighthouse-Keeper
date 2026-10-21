@@ -50,7 +50,6 @@ def test_config_roundtrip(tmp_path=None):
         "buy_times": ["10:00:00", "15:00:00"],
         "url": "https://cloud.tencent.com/act/pro/double12-2025#MS",
         "allow_retry_purchase": False,
-        "hide_window": True,
     }
     # 用假 app 对象，绕开窗口构造
     app = gui.BotApp.__new__(gui.BotApp)
@@ -68,7 +67,6 @@ def test_config_roundtrip(tmp_path=None):
     check("回读 TARGET_CONFIG 版本", data["TARGET_CONFIG"]["test_price"], "109")
     check("回读 RUN_MODE 模式", data["RUN_MODE"]["test_mode"], True)
     check("回读页面地址", data["PAGE_CONFIG"]["url"], values["url"])
-    check("回读离屏开关", data["BROWSER_CONFIG"]["hide_window"], True)
 
     # 清理，避免污染仓库
     Path(path).unlink()

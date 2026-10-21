@@ -16,7 +16,7 @@ def _app_dir():
 
 # 唯一的版本号来源：启动横幅、`--version`、EXE 文件属性都由它派生。
 # 发版流程：改这里 → 提交 → 打同名 tag（v1.1.0）→ CI 自动构建并发布。
-VERSION = "1.2.0"
+VERSION = "1.1.0"
 
 
 # ==================== 基础配置 ====================
@@ -39,12 +39,9 @@ TARGET_CONFIG = {
     "bandwidth": "3M",            # 带宽要求（生产模式）
     "duration": ["1年", "一年"],  # 时长（可选，命中加分）
     "exclude_specs": ["4核8G", "4核16G", "2核2G", "2核4G", "2核8G"],
-    # 测试模式：买最便宜的常售套餐做流程验证。
-    # 注意测试档的**规格与正式档不同**，所以要单独给 test_text / test_bandwidth；
-    # 109 元那档已因「首单条件不满足」买不了（账号买过），改用 2核2G3M 68 元。
-    "test_text": "2核2G",         # 测试档规格
-    "test_bandwidth": "3M",       # 测试档带宽
-    "test_price": "68",
+    # 测试模式：买 4核4G3M 的 109 元常售套餐 —— 走完整下单流程做验证，
+    # 既不会占用 38 元秒杀名额，也不会与正式档的价格判据混在一起。
+    "test_price": "109",
     # 备选价格故意留空：109 是常售档，页面上没有它时宁可报错，
     # 也不要降级去抢 38 元秒杀档（那是正式套餐，会真的下一单）。
     "test_prices_fallback": [],
@@ -93,25 +90,6 @@ IMAGE_OPTIONS = ["Clawdbot", "OpenClaw", "clawdbot", "OpenCloudOS"]
 BROWSER_CONFIG = {
     "channels": ["msedge", "chrome", None],
     "profile_dir": "browser-data",   # 相对 EXE 目录，可填绝对路径
-    # 不显示浏览器窗口：把窗口挪到屏幕外（肉眼看不见，但仍是真实渲染）。
-    #
-    # 为什么不用 headless：实测活动页对无头浏览器有反爬，headless=True 时
-    # 返回的是约 1 KB 的挑战页、0 张商品卡；离屏窗口则完全正常。
-    "hide_window": True,
-    "window_position": "-3200,-3200",  # 屏幕外坐标（多显示器时改更负的值）
-    "window_size": "1400,1000",
-}
-
-# 支付页与二维码提取
-PAYMENT_CONFIG = {
-    "qr_dir": "qrcodes",        # 二维码图片保存目录（相对 EXE 目录）
-    "wait_seconds": 20,         # 提交后等支付页出现的最长时间
-    "keep_last": 10,            # 目录里最多保留多少个二维码文件
-    # 收银台首页没有二维码：要先勾协议、点「下一步」，站点才跳到第三方支付页。
-    # 这几步由 advance_to_qr() 自动完成；关掉的话只会存收银台整页截图。
-    "auto_next_step": True,
-    "agreement_labels": ["label.tea-form-check", ".tea-checkbox"],
-    "next_button_texts": ["下一步", "确认支付", "去支付"],
 }
 
 # 调试配置

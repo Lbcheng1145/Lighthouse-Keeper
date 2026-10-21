@@ -69,7 +69,6 @@ hiddenimports = [
     "playwright._impl._driver",
     "greenlet",
     "gui",
-    "payment",
     "tkinter",
     "tkinter.ttk",
     "tkinter.scrolledtext",

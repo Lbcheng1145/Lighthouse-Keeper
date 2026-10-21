@@ -238,33 +238,12 @@ def test_buy_control_guard():
     check("None 安全", TencentCloudBot._is_buy_control(None), False)
 
 
-
-def test_mode_specific_target():
-    print("\n--- 测试档规格跟随模式 ---")
-    from main import TencentCloudBot
-
-    bot = TencentCloudBot()
-
-    bot.config["run_mode"]["test_mode"] = False
-    prod = bot._target_config_for_mode()
-    check("正式模式保留 4核4G", prod["text"], "4核4G")
-    check("正式模式保留排除表", "2核2G" in (prod.get("exclude_specs") or []), True)
-
-    bot.config["run_mode"]["test_mode"] = True
-    test = bot._target_config_for_mode()
-    check("测试模式换成 2核2G", test["text"], "2核2G")
-    check("测试模式带宽 3M", test["bandwidth"], "3M")
-    check("测试模式清空排除表（否则会误杀 2核2G）", test["exclude_specs"], [])
-    check("原始配置未被污染", bot.config["target"]["text"], "4核4G")
-
-
 def main():
     test_click_once()
     test_submit_scope()
     test_no_retry_by_default()
     test_price_tiers()
     test_buy_control_guard()
-    test_mode_specific_target()
 
     if FAILED:
         print(f"\n失败 {len(FAILED)} 项: {FAILED}")

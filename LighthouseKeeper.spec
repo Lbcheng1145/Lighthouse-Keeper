@@ -70,7 +70,6 @@ hiddenimports = [
     # 早先这里把 tkinter 放进了 excludes，结果双击 exe 直接报
     # "No module named tkinter" —— 用 --self-check 的 GUI-CHECK 发现的。
     "gui",
-    "payment",
     "tkinter",
     "tkinter.ttk",
     "tkinter.scrolledtext",

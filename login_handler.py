@@ -155,17 +155,6 @@ class LoginHandler:
         log("="*60, "INFO")
         log("请扫码登录（最多等待5分钟）", "INFO")
         log("="*60, "INFO")
-
-        # 离屏运行时用户看不到浏览器，登录二维码也得提取出来交给界面显示
-        if qr_appeared:
-            try:
-                import payment
-
-                saved = payment.capture_qr(self.page, "qrcodes", tag="login")
-                if saved:
-                    log(f"登录二维码: {saved[0]}", "SUCCESS")
-            except Exception as exc:
-                log(f"登录二维码提取失败: {str(exc)[:120]}", "WARNING")
         
         timeout = self.timeout["login_wait"]
         start_time = time.time()

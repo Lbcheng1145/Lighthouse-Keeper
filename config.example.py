@@ -24,9 +24,7 @@ TARGET_CONFIG = {
     "bandwidth": "3M",            # 带宽，必须紧跟在 text 之后（如 4核4G3M）
     "duration": ["1年", "一年"],  # 可选，命中加分
     "exclude_specs": ["4核8G", "4核16G", "2核2G", "2核4G", "2核8G"],
-    "test_text": "2核2G",          # 测试档规格（可与正式档不同）
-    "test_bandwidth": "3M",
-    "test_price": "68",            # 测试档：2核2G3M 68 元常售套餐
+    "test_price": "109",           # 测试档：4核4G3M 109 元常售套餐
     "test_prices_fallback": [],    # 留空：不要降级去抢正式秒杀档
     "prod_prices": ["38", "39"],  # 正式模式目标价格
 }
