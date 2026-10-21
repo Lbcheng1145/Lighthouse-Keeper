@@ -66,6 +66,14 @@ hiddenimports = [
     "playwright.sync_api",
     "playwright._impl._driver",
     "greenlet",
+    # 文件夹版默认也是图形界面入口，tkinter 必须打进去。
+    # 早先这里把 tkinter 放进了 excludes，结果双击 exe 直接报
+    # "No module named tkinter" —— 用 --self-check 的 GUI-CHECK 发现的。
+    "gui",
+    "tkinter",
+    "tkinter.ttk",
+    "tkinter.scrolledtext",
+    "tkinter.messagebox",
 ]
 
 a = Analysis(
@@ -78,7 +86,7 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        "tkinter", "unittest", "pydoc", "doctest",
+        "unittest", "pydoc", "doctest",
         "playwright.async_api",
     ],
     noarchive=False,

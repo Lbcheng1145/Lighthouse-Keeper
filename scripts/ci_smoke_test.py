@@ -1,140 +1,101 @@
-"""CI 冒烟测试：验证打包产物能真正启动。
+"""CI 冒烟测试：验证打包产物里的运行时是否完整。
 
 检查顺序：
-1. exe 与 _internal 存在
-2. 启动 exe，能生成日志文件
-3. 日志中出现启动横幅与配置加载
-4. 进程在限定时间内没有崩溃退出
+1. exe 存在（文件夹版还要求 `_internal` 存在）
+2. `--version` 能输出可识别的版本行，退出码 0
+3. `--self-check` 通过：
+   * `SELF-CHECK OK` —— 打包内的 Playwright 驱动能启动本机浏览器
+   * `GUI-CHECK OK`  —— tkinter 能建窗口（tcl/tk 数据打进去了）
 
-注意：不强制要求浏览器成功启动——GitHub Runner 的图形环境
-不一定可靠，浏览器失败属于环境限制，不作为构建失败依据，
-但会在输出里明确提示。
+为什么不直接启动程序本体：无参数启动等于打开图形界面，CI 里会一直等着
+用户关窗口；而 `--cli` 会真的走抢购流程。`--self-check` 两者都不碰，
+既能验证打包完整性，又不会产生任何订单。
 
 用法：
     python scripts/ci_smoke_test.py dist/LighthouseKeeper/LighthouseKeeper.exe
-
-注意：若在当前会话的文件沙箱内运行，且被测试程序位于系统临时目录
-（如 %TEMP%），子进程可能无法在该目录创建 logs/browser-data，
-从而表现为"未生成日志"。请把产物放到普通目录下再测。
 """
 import subprocess
 import sys
-import time
+import tempfile
 from pathlib import Path
 
-TIMEOUT = 40          # 最多等多少秒
-# 必须出现在日志里的标记。
-# 注意：启动横幅是 print() 输出到 stdout 的，不会进日志，不能用作标记。
-# "用户数据目录" 依赖浏览器启动成功，在无图形环境的 Runner 上可能不出现，
-# 因此只作提示，不作为失败依据。
-REQUIRED_MARKERS = [
-    "日志文件",          # logger 初始化成功
-]
-OPTIONAL_MARKERS = [
-    "用户数据目录",      # 浏览器启动成功
-]
+# Windows CI 的 stdout 默认是 cp1252，打印中文会 UnicodeEncodeError。
+# 这个脚本一直被 continue-on-error 兜着，之前静默失败没人发现。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+TIMEOUT = 180
 
 
-def _mode_ok(content: str) -> bool:
-    """启动横幅里会打印模式，二者其一即可。"""
-    return ("生产模式" in content) or ("测试模式" in content)
-
-
-def fail(msg: str) -> None:
-    print(f"[FAIL] {msg}")
-    sys.exit(1)
-
-
-def main() -> None:
-    if len(sys.argv) < 2:
-        fail("用法: ci_smoke_test.py <exe路径>")
-    exe = Path(sys.argv[1]).resolve()
-    if not exe.is_file():
-        fail(f"找不到 exe: {exe}")
-
-    internal = exe.parent / "_internal"
-    if not internal.is_dir():
-        fail(f"找不到 _internal 目录: {internal}")
-
-    logs_dir = exe.parent / "logs"
-    before = set(logs_dir.glob("*.log")) if logs_dir.is_dir() else set()
-
-    print(f"[INFO] 启动 {exe.name} ...")
-    proc = subprocess.Popen(
-        [str(exe)],
+def run(exe: Path, *args):
+    """跑一次 exe，返回 (exit_code, 合并输出)。"""
+    proc = subprocess.run(
+        [str(exe), *args],
+        capture_output=True,
+        text=True,
+        errors="replace",
+        timeout=TIMEOUT,
         cwd=str(exe.parent),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
     )
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
-    log_file = None
-    deadline = time.time() + TIMEOUT
-    while time.time() < deadline:
-        if logs_dir.is_dir():
-            new = set(logs_dir.glob("*.log")) - before
-            if new:
-                log_file = max(new, key=lambda p: p.stat().st_mtime)
-                break
-        if proc.poll() is not None:
-            # 进程退出了，先检查是否其实写了日志
-            if logs_dir.is_dir():
-                new = set(logs_dir.glob("*.log")) - before
-                if new:
-                    log_file = max(new, key=lambda p: p.stat().st_mtime)
-                    break
-            fail(f"进程提前退出，exit={proc.returncode}（未生成日志）")
-        time.sleep(0.5)
 
-    if log_file is None:
-        proc.kill()
-        fail(f"{TIMEOUT}s 内没有生成日志文件")
+def main() -> int:
+    if len(sys.argv) < 2:
+        print("用法: python scripts/ci_smoke_test.py <exe 路径>")
+        return 2
 
-    # 等日志写够内容
-    content = ""
-    for _ in range(40):          # 最多 20 秒
-        try:
-            content = log_file.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            content = ""
-        if all(m in content for m in REQUIRED_MARKERS) and _mode_ok(content):
+    exe = Path(sys.argv[1]).resolve()
+    folder_edition = exe.parent.name == "LighthouseKeeper"
+
+    print(f"[INFO] 被测程序: {exe}")
+    if not exe.is_file():
+        print("[FAIL] exe 不存在")
+        return 1
+    print(f"[INFO] 体积: {exe.stat().st_size / 1048576:.1f} MB")
+
+    if folder_edition:
+        internal = exe.parent / "_internal"
+        if not internal.is_dir():
+            print("[FAIL] 缺少 _internal 目录（文件夹版不完整）")
+            return 1
+        print("[INFO] _internal 存在")
+
+    # 1) 版本号
+    code, out = run(exe, "--version")
+    line = next((ln.strip() for ln in out.splitlines() if "LighthouseKeeper v" in ln), "")
+    print(f"[INFO] --version -> rc={code} {line!r}")
+    if code != 0 or not line:
+        print("[FAIL] --version 没有输出可识别的版本行")
+        print(out[:800])
+        return 1
+
+    # 2) 打包自检
+    code, out = run(exe, "--self-check")
+    print(f"[INFO] --self-check -> rc={code}")
+    report = ""
+    for candidate in (exe.parent / "self-check.log",
+                      Path(tempfile.gettempdir()) / "lighthouse-self-check.log"):
+        if candidate.is_file():
+            report = candidate.read_text(encoding="utf-8", errors="replace")
+            candidate.unlink(missing_ok=True)
             break
-        if proc.poll() is not None:
-            break                # 进程已退出，不再空等
-        time.sleep(0.5)
 
-    alive = proc.poll() is None
-    proc.kill()
+    combined = out + report
+    if code != 0 or "SELF-CHECK OK" not in combined:
+        print("[FAIL] 浏览器驱动自检未通过")
+        print(combined[:1200])
+        return 1
+    if "GUI-CHECK OK" not in combined:
+        print("[FAIL] tkinter 自检未通过（图形接口没打进包里？）")
+        print(combined[:1200])
+        return 1
 
-    # 进程退出后日志可能才刷完，重读一次
-    try:
-        content = log_file.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        pass
-
-    print(f"[INFO] 日志文件: {log_file.name}")
-    print("-------- 日志摘要 --------")
-    for line in content.splitlines()[:15]:
-        print("  " + line)
-    print("--------------------------")
-
-    missing = [m for m in REQUIRED_MARKERS if m not in content]
-    if missing:
-        fail(f"日志缺少关键标记: {missing}")
-    if not _mode_ok(content):
-        fail("日志中未检测到运行模式，程序可能未正常初始化")
-
-    browser_ok = all(m in content for m in OPTIONAL_MARKERS)
-    print(
-        "[INFO] 浏览器启动: "
-        + ("成功" if browser_ok else "未确认（无图形环境的 Runner 上属正常）")
-    )
-
-    if not alive:
-        fail("启动过程中进程异常退出")
-
-    print("[OK] 冒烟测试通过")
+    print("[OK] 冒烟测试通过：版本可读、浏览器驱动可用、图形接口可用")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

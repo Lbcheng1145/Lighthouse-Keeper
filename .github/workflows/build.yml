@@ -104,10 +104,9 @@ jobs:
           Remove-Item $report -ErrorAction SilentlyContinue
           Get-ChildItem dist-gui | Select-Object Name, Length
 
-      # README 里单独给出运行冒烟测试，避免它被当成环境问题
-      # 而误判整个构建失败。核心产物正确性已在上一环节校验。
+      # 文件夹版的运行时完整性：版本可读 + 浏览器驱动可用 + tkinter 可用。
+      # 用 --self-check 而不是直接启动（无参数=GUI 会挂住、--cli 会真跑流程）。
       - name: Smoke test
-        continue-on-error: true
         run: python scripts/ci_smoke_test.py dist/LighthouseKeeper/LighthouseKeeper.exe
 
       - name: Copy release extras
