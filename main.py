@@ -459,23 +459,29 @@ class TencentCloudBot:
         self._wait_for_page_ready(10000)
         log("页面加载完成", "SUCCESS")
 
-    def _wait_for_page_ready(self, timeout_ms=10000):
-        """等「Tab 出现、页面可操作」。
+    # 首屏「能用」的判据：商品卡或 Tab 已经进了 DOM 就算数。
+    READY_SELECTOR = ".qc-base-grid__col, .qc-tabs__nav-item, [role=tab]"
 
-        这是比「等 domcontentloaded」更贴近实际的就绪信号：Tab 出来了，
-        就说明活动页主体已经渲染，可以点 Tab / 滚动了。超时则退回等
-        domcontentloaded，行为与旧版一致，不会更慢。
+    def _wait_for_page_ready(self, timeout_ms=10000):
+        """等页面「可操作」：商品卡 / Tab 已进 DOM（不要求可见）。
+
+        为什么要 state='attached'：实测活动页的 Tab 元素存在但常常不可见
+        （被折叠或未激活），按默认的 state='visible' 会一直等到超时 ——
+        日志里「首屏 Tab 未在预期时间内出现」就是白等了 10 秒。
+        进 DOM 就够用了，可见性由后面点 Tab 时的 el.is_visible() 判断。
         """
         try:
-            self.page.wait_for_selector(".qc-tabs__nav-item, [role=tab]", timeout=timeout_ms)
+            self.page.wait_for_selector(
+                self.READY_SELECTOR, state="attached", timeout=timeout_ms
+            )
         except Exception:
-            log("首屏 Tab 未在预期时间内出现，按当前 DOM 继续", "WARNING")
+            log("首屏元素未在预期时间内出现，按当前 DOM 继续", "WARNING")
             try:
                 self.page.wait_for_load_state('domcontentloaded', timeout=5000)
             except Exception:
                 pass
         try:
-            self.page.wait_for_timeout(200)
+            self.page.wait_for_timeout(300)
         except Exception:
             pass
     

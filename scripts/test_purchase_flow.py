@@ -432,12 +432,140 @@ def test_test_spec_override():
         cfg.RUN_MODE.update(saved_mode)
 
 
+def test_submit_success_signal():
+    print("\n--- 提交成功必须有真实信号（弹窗关闭不算） ---")
+    from purchase_flow import PurchaseFlow
+
+    class Page:
+        """弹窗永远不可见；可配置 URL、页面上的支付字样、是否新开标签页。"""
+
+        def __init__(self, url="https://cloud.tencent.com/act/pro/double12-2025",
+                     visible_texts=(), open_on_wait=False):
+            self.url = url
+            self._texts = set(visible_texts)
+            self._open_on_wait = open_on_wait
+            self._opened = False
+            self._pages = [self]
+            self.context = type("Ctx", (), {})()
+            self.context.pages = self._pages
+
+        def wait_for_timeout(self, ms):
+            if self._open_on_wait and not self._opened:
+                self._pages.append(object())
+                self._opened = True
+
+        def locator(self, sel):
+            class El:
+                def is_visible(self, timeout=None):
+                    return False
+
+            class Loc:
+                @property
+                def first(self):
+                    return El()
+
+                def all(self):
+                    return []
+
+            return Loc()
+
+        def get_by_text(self, text, exact=False):
+            n = 1 if text in self._texts else 0
+
+            class C:
+                def count(self):
+                    return n
+
+            return C()
+
+    cfg = {"target": {"prod_prices": ["38"]}, "page": {}, "run_mode": {}, "images": []}
+    activity = "https://cloud.tencent.com/act/pro/double12-2025"
+
+    # 1) 点完提交，弹窗关了，但 URL 没变、也没有支付特征 -> 不能算成功
+    page = Page(activity)
+    flow = PurchaseFlow(page, cfg, {})
+    flow._dialog_visible = lambda: False
+    check("弹窗关闭不算成功", flow._wait_submitted(activity, timeout_ms=450), False)
+
+    # 2) 跳到下单页 -> 成功
+    page2 = Page("https://buy.cloud.tencent.com/lighthouse/order?x=1")
+    flow2 = PurchaseFlow(page2, cfg, {})
+    check(
+        "跳到下单页算成功",
+        flow2._wait_submitted(activity, timeout_ms=300),
+        True,
+    )
+
+    # 3) 页面出现「去支付」-> 成功
+    page3 = Page(activity, visible_texts={"去支付"})
+    flow3 = PurchaseFlow(page3, cfg, {})
+    check("出现「去支付」算成功", flow3._wait_submitted(activity, timeout_ms=300), True)
+
+    # 4) 打开新标签页 -> 成功
+    page4 = Page(activity, open_on_wait=True)
+    flow4 = PurchaseFlow(page4, cfg, {})
+    check("打开新标签页算成功", flow4._wait_submitted(activity, timeout_ms=300), True)
+
+    # 5) 还在活动页、URL 只是加了 hash -> 不算成功
+    page5 = Page(activity + "#MS")
+    flow5 = PurchaseFlow(page5, cfg, {})
+    check("仅 hash 变化不算成功", flow5._wait_submitted(activity, timeout_ms=300), False)
+
+
+def test_submit_clicks_at_most_once():
+    print("\n--- 提交最多点一次（点了没确认成功也不再来第二下） ---")
+
+    class Btn:
+        def __init__(self):
+            self.clicked = 0
+
+        def inner_text(self):
+            return "立即购买"
+
+        def is_visible(self, timeout=None):
+            return True
+
+        def is_disabled(self):
+            return False
+
+        def get_attribute(self, name):
+            return ""
+
+        def click(self, **kwargs):
+            self.clicked += 1
+
+        def highlight(self):
+            pass
+
+    class Page:
+        url = "https://cloud.tencent.com/act/pro/double12-2025"
+
+        def wait_for_timeout(self, ms):
+            pass
+
+    from purchase_flow import PurchaseFlow
+
+    cfg = {"target": {"prod_prices": ["38"]}, "page": {}, "run_mode": {}, "images": []}
+    flow = PurchaseFlow(Page(), cfg, {})
+    btn = Btn()
+    scope = object()
+    flow._find_dialog_scope = lambda: scope
+    flow._wait_submit_button = lambda s, wait_seconds=None: btn
+    flow._wait_submitted = lambda url: False
+    flow._dump_submit_state = lambda: None
+    ok = flow._submit_order()
+    check("未确认成功时返回 False", ok, False)
+    check("提交按钮只被点击 1 次", btn.clicked, 1)
+
+
 def main():
     test_click_once()
     test_submit_scope()
     test_no_retry_by_default()
     test_price_tiers()
     test_test_spec_override()
+    test_submit_success_signal()
+    test_submit_clicks_at_most_once()
     test_buy_control_guard()
     test_submit_button_wait()
     test_dialog_first_then_login()

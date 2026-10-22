@@ -48,8 +48,12 @@ def main() -> int:
 
     from bench_flow import build_html
 
-    fixture = Path(tempfile.mkdtemp(prefix="lk-e2e-")) / "activity.html"
+    fixture_dir = Path(tempfile.mkdtemp(prefix="lk-e2e-"))
+    fixture = fixture_dir / "activity.html"
     fixture.write_text(build_html(), encoding="utf-8")
+    (fixture_dir / "order.html").write_text(
+        "<!doctype html><meta charset=utf-8><h1>订单页</h1>", encoding="utf-8"
+    )
 
     launched = False
     with sync_playwright() as p:
@@ -113,6 +117,10 @@ def main() -> int:
             check("页面已跳到下单页", "#submitted" in page.url, True)
 
             print("\n--- 测试模式独立规格（换选另一张卡） ---")
+            # 上一步提交后页面已经跳到订单页，先回到活动页再继续
+            page.goto(fixture.as_uri(), wait_until="domcontentloaded")
+            page.wait_for_selector(".qc-tabs__nav-item", state="visible", timeout=5000)
+            page.wait_for_timeout(200)
             import config as cfg
 
             saved_target = dict(cfg.TARGET_CONFIG)
@@ -142,6 +150,27 @@ def main() -> int:
                 cfg.TARGET_CONFIG.update(saved_target)
                 cfg.RUN_MODE.clear()
                 cfg.RUN_MODE.update(saved_mode)
+
+            print("\n--- 假配置弹窗（只有「确定」，点了就关、不跳转） ---")
+            # 复现实测日志 06:22:37 的场景：点到弹窗里的「确定」，弹窗关闭，
+            # 但页面没跳转 —— 过去会被误判成「购买流程完成」。
+            # （上一个场景结束时页面已经回到活动页，这里不再重复导航）
+            page.evaluate(
+                """() => {
+                  const d = document.createElement('div');
+                  d.className = 'uno3-dialog';
+                  d.innerHTML = '<div>温馨提示</div>'
+                    + '<div class="uno3-dialog-footer"><button id="fake-ok">确定</button></div>';
+                  document.body.appendChild(d);
+                  document.getElementById('fake-ok')
+                    .addEventListener('click', () => d.remove());
+                }"""
+            )
+            flow3 = PurchaseFlow(page, bot.config, bot.config["timeout"])
+            flow3.SUBMIT_WAIT_SECONDS = 2
+            ok = flow3._submit_order()
+            check("没有真实成功信号时不报成功", ok, False)
+            check("弹窗确实被关掉了（不是没点到）", page.locator(".uno3-dialog").count(), 0)
         finally:
             try:
                 context.close()

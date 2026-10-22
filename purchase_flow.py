@@ -320,9 +320,35 @@ class PurchaseFlow:
         log("在配置弹窗里选择镜像...", "INFO")
         self._ensure_page_ready(3000)
 
+        scope = self._find_dialog_scope()
+        if scope is not None:
+            self._warn_if_dialog_is_not_config(scope)
+
         if not self._pick_image():
             log("未找到指定镜像，按默认选择继续", "WARNING")
+            # 把弹窗真实内容打出来：多半是镜像名与配置里的不一样，
+            # 或者要展开下拉框才能选。有这行日志才能对症改配置。
+            self._dump_dialog_state(scope if scope is not None else self.page)
         return self._submit_order()
+
+    # 配置弹窗应该出现的字样。都没有的话，多半我们抓到的其实是
+    # 「售罄 / 库存不足 / 请稍后」这类提示框，里面的「确定」不是提交按钮。
+    CONFIG_DIALOG_HINTS = ("镜像", "地域", "时长", "数量", "规格", "套餐", "系统盘")
+
+    def _warn_if_dialog_is_not_config(self, scope):
+        """弹窗里没有任何配置项时给出明确警告（否则容易误点「确定」）。"""
+        try:
+            text = scope.inner_text() or ""
+        except Exception:
+            return
+        if any(hint in text for hint in self.CONFIG_DIALOG_HINTS):
+            return
+        flat = " | ".join(x.strip() for x in text.splitlines() if x.strip())
+        log(
+            f"弹窗里没有「镜像/地域/时长」等配置项，可能不是配置弹窗而是提示框: "
+            f"{flat[:300]}",
+            "WARNING",
+        )
 
     def _pick_image(self):
         """选镜像。命中返回 True；没有可用镜像返回 False（调用方继续提交）。"""
@@ -374,9 +400,18 @@ class PurchaseFlow:
         早期实现把页面级 `button:has-text("立即购买")` 也放进候选选择器，
         而活动页上每张商品卡都有这个按钮 —— 于是会点到别的商品；外层还有
         10 次重试，实测表现为「同时下单两个商品」。
+
+        防误报：点完提交**必须**看到「跳转到下单页 / 打开支付页 / 出现
+        收银台字样」才算成功。早期版本只要「配置弹窗关闭了」就判定成功，
+        于是点了弹窗里的「确定」（多半是提示框或关闭按钮）也会打印
+        「购买流程完成」，实际什么都没下单 —— 实测日志 06:22:37 就是这样。
+
+        防重复：一旦点过提交，就不再点第二次。没确认成功宁可停下来让
+        人工接手，也不能赌第二单。
         """
         log("提交订单...", "INFO")
         start_url = self.page.url
+        clicked_once = False
 
         for attempt in range(2):
             scope = self._find_dialog_scope()
@@ -413,6 +448,7 @@ class PurchaseFlow:
 
             try:
                 btn.click(force=True, timeout=self.CLICK_TIMEOUT_MS)
+                clicked_once = True
                 log(f"已点击提交按钮: {btn_text}", "INFO")
             except Exception as exc:
                 log(f"点击提交按钮失败: {exc}", "WARNING")
@@ -421,8 +457,68 @@ class PurchaseFlow:
             if self._wait_submitted(start_url):
                 return True
 
-        log("未确认提交成功，请人工点击（不再自动重复点击，避免重复下单）", "WARNING")
+            log(
+                "已点击提交，但没有出现「跳转到下单页 / 打开支付页 / 收银台」"
+                "等成功信号 —— 不判定为下单成功",
+                "WARNING",
+            )
+            self._dump_submit_state()
+            # 点过就不再来一次：宁可人工接手，也不能赌出第二单
+            break
+
+        log("未确认提交成功，请到浏览器里人工确认（已避免自动重复点击）", "WARNING")
         return False
+
+    # 提交成功的可靠信号：只看这些，不看「弹窗是否关闭」
+    ORDER_URL_HINTS = (
+        "buy.cloud.tencent.com",
+        "/order",
+        "/deal",
+        "cashier",
+        "/pay",
+    )
+    SUCCESS_TEXTS = ("去支付", "收银台", "订单提交成功", "提交成功", "待支付", "支付订单")
+
+    def _is_order_or_pay_page(self, url):
+        """URL 是否已经离开活动页、进入下单/支付流程。"""
+        u = (url or "").lower()
+        if not u or self._is_activity_page(u):
+            return False
+        return any(hint in u for hint in self.ORDER_URL_HINTS)
+
+    def _has_success_signal(self):
+        """页面上是否出现了「去支付 / 收银台 / 提交成功」等特征。"""
+        probes = [f"text={t}" for t in self.SUCCESS_TEXTS]
+        found = js_visible_any(self.page, probes)
+        if found is not UNSUPPORTED:
+            return found is not None
+        for text in self.SUCCESS_TEXTS:
+            try:
+                if self.page.get_by_text(text, exact=False).count() > 0:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _dump_submit_state(self):
+        """提交后没确认成功时，把现场写进日志，方便人工判断到底停在哪。"""
+        try:
+            url = self.page.url
+        except Exception:
+            url = "(读不到)"
+        dialog = "仍在" if self._dialog_visible() else "已关闭"
+        log(f"提交后现场: URL={url} | 配置弹窗={dialog}", "WARNING")
+        try:
+            context = self.page.context
+            if context is not None and len(context.pages) > 1:
+                log(f"当前标签页: {[p.url for p in context.pages]}", "WARNING")
+        except Exception:
+            pass
+        log(
+            "常见原因：点到的「确定」其实是提示框/关闭按钮，或镜像/地域还没选、"
+            "提交按钮仍禁用。请在浏览器里看一眼，必要时手动完成。",
+            "WARNING",
+        )
 
     def _wait_submit_button(self, scope, wait_seconds=None):
         """轮询等待提交按钮变为可点击。
@@ -552,28 +648,66 @@ class PurchaseFlow:
         except Exception:
             return False
 
-    def _wait_submitted(self, start_url, timeout_ms=3000):
-        """确认订单是否已提交：URL 变化，或配置弹窗关闭。
+    def _wait_submitted(self, start_url, timeout_ms=6000):
+        """确认订单是否真的提交成功。
 
-        轮询间隔 150ms（原来 300ms）：既能更快确认提交，也不会把页面查垮。
+        只认这三类**可靠信号**：
+          1. 提交后打开了新标签页（多半是订单/支付页）；
+          2. 当前页 URL 离开活动页、进入下单/支付流程；
+          3. 页面上出现「去支付 / 收银台 / 提交成功」等字样。
+
+        「配置弹窗关闭」**不算**成功信号 —— 点了弹窗里的「确定」也会让它
+        关闭。早期版本就是拿它当成功判据，于是误报「购买流程完成」，
+        而实际什么都没下单（实测日志 06:22:37）。
+
+        顺带也就修掉了「点击后页面没反应却等 3 秒」：超时给到 6 秒，
+        因为真实订单页跳转有时要几秒。
         """
+        try:
+            context = self.page.context
+        except Exception:
+            context = None
+        pages_before = len(context.pages) if context is not None else 0
+
         waited = 0
         step = 150
         while waited < timeout_ms:
+            # 1) 新标签页（订单页/收银台常常开新窗口）
+            if context is not None:
+                try:
+                    if len(context.pages) > pages_before:
+                        newest = context.pages[-1]
+                        # 取 URL 只是为了让日志更好读，绝不能因为它失败就
+                        # 把「确实开了新页面」这个成功信号吞掉
+                        try:
+                            new_url = newest.url
+                        except Exception:
+                            new_url = "(读不到)"
+                        log(f"提交后打开了新页面: {new_url}", "SUCCESS")
+                        return True
+                except Exception:
+                    pass
+
+            # 2) 当前页跳到下单/支付页
+            try:
+                url = self.page.url
+            except Exception:
+                # 上下文已经没了，多半是页面正在跳转/关闭，按已提交处理
+                return True
+            if url != start_url and self._is_order_or_pay_page(url):
+                log(f"检测到已跳转到下单页，提交成功: {url}", "SUCCESS")
+                return True
+
+            # 3) 页面出现支付/订单特征
+            if self._has_success_signal():
+                log("页面上出现「去支付 / 收银台」等字样，判定提交成功", "SUCCESS")
+                return True
+
             try:
                 self.page.wait_for_timeout(step)
             except Exception:
                 return True
             waited += step
-            try:
-                if self.page.url != start_url:
-                    log(f"检测到页面跳转，提交成功: {self.page.url}", "SUCCESS")
-                    return True
-            except Exception:
-                return True
-            if not self._dialog_visible():
-                log("配置弹窗已关闭，判定提交成功", "SUCCESS")
-                return True
         return False
 
     def _get_target_prices(self):

@@ -373,7 +373,9 @@ class ProductFinder:
         拿那张卡的句柄，而不是「每张卡都做两次跨进程往返」。
         """
         for selector in self.CARD_SELECTORS:
-            probe = js_collect_cards(self.page, selector)
+            probe = js_collect_cards(
+                self.page, selector, feature=(self.target.get("text") or "")
+            )
 
             if probe is not UNSUPPORTED:
                 if not isinstance(probe, list) or not probe:

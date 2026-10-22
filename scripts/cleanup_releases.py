@@ -16,10 +16,10 @@ OWNER = "Lbcheng1145"
 REPO = "Lighthouse-Keeper"
 API = f"https://api.github.com/repos/{OWNER}/{REPO}"
 
-KEEP = os.environ.get("KEEP_TAG", "v1.3.0")
+KEEP = os.environ.get("KEEP_TAG", "v1.3.1")
 CANDIDATES = [
     "v1.0.0", "v1.0.1", "v1.0.2", "v1.0.3",
-    "v1.1.0", "v1.1.1", "v1.2.0", "v1.2.1", "v1.3.0",
+    "v1.1.0", "v1.1.1", "v1.2.0", "v1.2.1", "v1.3.0", "v1.3.1",
 ]
 
 

@@ -110,7 +110,8 @@ function openDialog() {{
     // 模拟异步校验：2 秒后提交按钮才可用
     setTimeout(() => {{ const b = document.getElementById('submit'); if (b) b.disabled = false; }}, 2000);
     document.getElementById('submit').addEventListener('click', () => {{
-      location.href = '#submitted';
+      // 模拟真实跳转：离开活动页进入订单页（URL 变化才算法定成功信号）
+      location.href = 'order.html#submitted';
       d.remove();
     }});
   }}, 400);
@@ -219,8 +220,13 @@ def main():
     import tempfile
 
     html = build_html(filler)
-    fixture = Path(tempfile.mkdtemp(prefix="lk-fixture-")) / "activity.html"
+    fixture_dir = Path(tempfile.mkdtemp(prefix="lk-fixture-"))
+    fixture = fixture_dir / "activity.html"
     fixture.write_text(html, encoding="utf-8")
+    # 提交后要跳到的「订单页」：真实存在，避免 file:// 导航失败
+    (fixture_dir / "order.html").write_text(
+        "<!doctype html><meta charset=utf-8><h1>订单页</h1>", encoding="utf-8"
+    )
     page_url = fixture.as_uri()
     runs = []
     with sync_playwright() as p:
