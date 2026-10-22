@@ -128,9 +128,11 @@ def build_html(filler=0):
     """
     import json
 
-    cards = [{"text": CARD_OTHER, "kind": "normal"} for _ in range(max(0, filler) // 2)]
+    side = max(0, filler) // 2
+    # 至少一张「不相干」的卡：用来验证规格判据不会误选相邻档
+    cards = [{"text": CARD_OTHER, "kind": "normal"} for _ in range(max(1, side))]
     cards.append({"text": CARD_109, "kind": "normal"})      # 目标（109 常售）
-    cards.extend({"text": CARD_OTHER, "kind": "normal"} for _ in range(max(0, filler) // 2))
+    cards.extend({"text": CARD_OTHER, "kind": "normal"} for _ in range(side))
     cards.append({"text": CARD_38, "kind": "seckill"})      # 秒杀档（不应被选中）
     return PAGE_HTML.format(cards=json.dumps(cards, ensure_ascii=False))
 

@@ -124,12 +124,49 @@ def _resolve_profile_dir(browser_cfg):
         return fallback
 
 
+def resolve_target(target, run_mode):
+    """按运行模式返回「实际用于选品」的规格配置（纯函数，便于测试）。
+
+    测试模式可以用 test_text / test_bandwidth 指定一套独立规格：例如正式抢
+    「4核4G3M 38 元」，测试时只想验证「2核2G3M 109 元」的下单链路。
+    没配置这两项就沿用正式规格，与旧配置完全兼容。
+
+    特别注意 exclude_specs：默认配置里排除了「2核2G」等相邻规格，如果
+    测试规格正好是其中之一，不移除的话测试档永远匹配不到（自相矛盾）。
+    想自定义排除项就配 test_exclude_specs。
+    """
+    if not (run_mode or {}).get("test_mode"):
+        return target
+
+    spec = (target.get("test_text") or "").strip()
+    bandwidth = (target.get("test_bandwidth") or "").strip()
+    if not spec and not bandwidth:
+        return target
+
+    merged = dict(target)
+    if spec:
+        merged["text"] = spec
+        merged["exclude_specs"] = [
+            item for item in (target.get("exclude_specs") or []) if item != spec
+        ]
+    if bandwidth:
+        merged["bandwidth"] = bandwidth
+
+    custom_excludes = target.get("test_exclude_specs")
+    if custom_excludes:
+        merged["exclude_specs"] = list(custom_excludes)
+    return merged
+
+
 class TencentCloudBot:
     """腾讯云抢购机器人"""
     
     def __init__(self):
         self.config = {
-            "target": TARGET_CONFIG,
+            # 这里放的是「当前模式实际生效」的规格：测试模式下若配了
+            # test_text / test_bandwidth，会在这里被替换成测试规格，
+            # 下游（ProductFinder / PurchaseFlow）无需关心模式差异。
+            "target": resolve_target(TARGET_CONFIG, RUN_MODE),
             "page": PAGE_CONFIG,
             "run_mode": RUN_MODE,
             "timeout": TIMEOUT_CONFIG,
@@ -323,7 +360,10 @@ class TencentCloudBot:
         
         if self.config["run_mode"]["test_mode"]:
             price = self.config["target"]["test_price"]
-            log(f"测试模式: 将抢购 {price}元 套餐", "INFO")
+            # 测试规格可能被 test_text / test_bandwidth 覆盖，打印实际生效的那套
+            spec = self.config["target"].get("text") or "(未配置)"
+            bandwidth = self.config["target"].get("bandwidth") or ""
+            log(f"测试模式: 将抢购 {spec}{bandwidth} {price}元 套餐", "INFO")
         else:
             prices = self.config["target"]["prod_prices"]
             times = self.config["run_mode"]["buy_times"]

@@ -25,6 +25,10 @@ TARGET_CONFIG = {
     "duration": ["1年", "一年"],  # 可选，命中加分
     "exclude_specs": ["4核8G", "4核16G", "2核2G", "2核4G", "2核8G"],
     "test_price": "109",           # 测试档：4核4G3M 109 元常售套餐
+    # 测试模式专用规格：留空 = 沿用上面的 text / bandwidth。
+    # 例：想用「2核2G3M 109 元」验证流程，就填下面两行。
+    "test_text": "",               # 如 "2核2G"
+    "test_bandwidth": "",          # 如 "3M"
     "test_prices_fallback": [],    # 留空：不要降级去抢正式秒杀档
     "prod_prices": ["38", "39"],  # 正式模式目标价格
 }

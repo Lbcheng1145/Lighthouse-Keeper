@@ -383,11 +383,61 @@ def test_dialog_first_then_login():
     check("登录处理后继续选镜像", log2["select"], 1)
 
 
+def test_test_spec_override():
+    print("\n--- 测试模式独立规格 ---")
+    import config as cfg
+    from config import TARGET_CONFIG
+    from main import resolve_target
+    from product_finder import evaluate_card_text
+
+    base = dict(TARGET_CONFIG)
+    prod = resolve_target(base, {"test_mode": False})
+    check("正式模式沿用正式规格", prod["text"], "4核4G")
+
+    custom = dict(base, test_text="2核2G", test_bandwidth="3M")
+    test = resolve_target(custom, {"test_mode": True})
+    check("测试模式换用测试规格", (test["text"], test["bandwidth"]), ("2核2G", "3M"))
+    check(
+        "与测试规格同名的排除项被移除（否则永远匹配不到）",
+        "2核2G" in (test["exclude_specs"] or []),
+        False,
+    )
+    check("其它排除项保留", "4核8G" in test["exclude_specs"], True)
+    check("未配测试规格时回退到正式规格", resolve_target(base, {"test_mode": True})["text"], "4核4G")
+    check("正式配置不会被测试规格污染", base["text"], TARGET_CONFIG["text"])
+
+    # 选品判据确实按「当前模式的规格」走
+    card_2c2g = "轻量应用服务器 2核2G3M\n活动价：\n109\n元\n日常价：780元\n立即购买"
+    card_4c4g = "轻量应用服务器 4核4G3M\n活动价：\n109\n元\n日常价：780元\n立即购买"
+    check("2核2G 卡命中测试规格", evaluate_card_text(card_2c2g, test, ["109"])[0], True)
+    check("4核4G 卡不命中测试规格", evaluate_card_text(card_4c4g, test, ["109"])[0], False)
+    check("正式规格仍命中 4核4G 卡", evaluate_card_text(card_4c4g, prod, ["109"])[0], True)
+
+    # bot 初始化后就该拿到「当前模式实际生效」的规格
+    from main import TencentCloudBot
+
+    saved = dict(TARGET_CONFIG)
+    saved_mode = dict(cfg.RUN_MODE)
+    try:
+        cfg.TARGET_CONFIG["test_text"] = "2核2G"
+        cfg.TARGET_CONFIG["test_bandwidth"] = "3M"
+        cfg.RUN_MODE["test_mode"] = True
+        bot = TencentCloudBot()
+        check("bot 使用测试规格", bot.config["target"]["text"], "2核2G")
+        check("bot 的测试价仍在", bot.config["target"]["test_price"], base["test_price"])
+    finally:
+        cfg.TARGET_CONFIG.clear()
+        cfg.TARGET_CONFIG.update(saved)
+        cfg.RUN_MODE.clear()
+        cfg.RUN_MODE.update(saved_mode)
+
+
 def main():
     test_click_once()
     test_submit_scope()
     test_no_retry_by_default()
     test_price_tiers()
+    test_test_spec_override()
     test_buy_control_guard()
     test_submit_button_wait()
     test_dialog_first_then_login()

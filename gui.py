@@ -153,24 +153,36 @@ class BotApp:
         self.bandwidth_var = tk.StringVar()
         ttk.Entry(cfg, textvariable=self.bandwidth_var, width=8).grid(row=1, column=3, sticky="w")
 
-        ttk.Label(cfg, text="测试价").grid(row=2, column=0, sticky="w", pady=3)
-        self.test_price_var = tk.StringVar()
-        ttk.Entry(cfg, textvariable=self.test_price_var, width=12).grid(row=2, column=1, sticky="w")
-
-        ttk.Label(cfg, text="正式价").grid(row=2, column=2, sticky="w")
-        self.prod_price_var = tk.StringVar()
-        ttk.Entry(cfg, textvariable=self.prod_price_var, width=16).grid(row=2, column=3, sticky="w")
-
-        ttk.Label(cfg, text="抢购时间").grid(row=3, column=0, sticky="w", pady=3)
-        self.buy_times_var = tk.StringVar()
-        ttk.Entry(cfg, textvariable=self.buy_times_var).grid(
-            row=3, column=1, columnspan=3, sticky="ew"
+        ttk.Label(cfg, text="测试规格").grid(row=2, column=0, sticky="w", pady=3)
+        self.test_spec_var = tk.StringVar()
+        ttk.Entry(cfg, textvariable=self.test_spec_var).grid(
+            row=2, column=1, sticky="ew", padx=(0, 8)
         )
 
-        ttk.Label(cfg, text="活动页地址").grid(row=4, column=0, sticky="w", pady=3)
+        ttk.Label(cfg, text="测试带宽").grid(row=2, column=2, sticky="w")
+        self.test_bandwidth_var = tk.StringVar()
+        ttk.Entry(cfg, textvariable=self.test_bandwidth_var, width=8).grid(
+            row=2, column=3, sticky="w"
+        )
+
+        ttk.Label(cfg, text="测试价").grid(row=3, column=0, sticky="w", pady=3)
+        self.test_price_var = tk.StringVar()
+        ttk.Entry(cfg, textvariable=self.test_price_var, width=12).grid(row=3, column=1, sticky="w")
+
+        ttk.Label(cfg, text="正式价").grid(row=3, column=2, sticky="w")
+        self.prod_price_var = tk.StringVar()
+        ttk.Entry(cfg, textvariable=self.prod_price_var, width=16).grid(row=3, column=3, sticky="w")
+
+        ttk.Label(cfg, text="抢购时间").grid(row=4, column=0, sticky="w", pady=3)
+        self.buy_times_var = tk.StringVar()
+        ttk.Entry(cfg, textvariable=self.buy_times_var).grid(
+            row=4, column=1, columnspan=3, sticky="ew"
+        )
+
+        ttk.Label(cfg, text="活动页地址").grid(row=5, column=0, sticky="w", pady=3)
         self.url_var = tk.StringVar()
         ttk.Entry(cfg, textvariable=self.url_var).grid(
-            row=4, column=1, columnspan=3, sticky="ew"
+            row=5, column=1, columnspan=3, sticky="ew"
         )
 
         self.retry_var = tk.BooleanVar(value=False)
@@ -178,7 +190,7 @@ class BotApp:
             cfg,
             text="点击后看不到配置弹窗时允许重新定位再点一次（有重复下单风险，默认关闭）",
             variable=self.retry_var,
-        ).grid(row=5, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ).grid(row=6, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
         bar = ttk.Frame(self.root, padding=(12, 0))
         bar.pack(fill="x")
@@ -209,6 +221,8 @@ class BotApp:
         self.mode_var.set("test" if run_mode.get("test_mode") else "prod")
         self.spec_var.set(target.get("text", "4核4G"))
         self.bandwidth_var.set(target.get("bandwidth", "3M"))
+        self.test_spec_var.set(target.get("test_text", "") or "")
+        self.test_bandwidth_var.set(target.get("test_bandwidth", "") or "")
         self.test_price_var.set(target.get("test_price", "109"))
         self.prod_price_var.set(", ".join(target.get("prod_prices", ["38", "39"])))
         self.buy_times_var.set(", ".join(run_mode.get("buy_times", ["10:00:00", "15:00:00"])))
@@ -231,6 +245,8 @@ class BotApp:
             "test_mode": self.mode_var.get() == "test",
             "spec": self.spec_var.get().strip(),
             "bandwidth": self.bandwidth_var.get().strip(),
+            "test_spec": self.test_spec_var.get().strip(),
+            "test_bandwidth": self.test_bandwidth_var.get().strip(),
             "test_price": self.test_price_var.get().strip(),
             "prod_prices": prices,
             "buy_times": times,
@@ -242,6 +258,8 @@ class BotApp:
         """就地改 config 模块里的字典，正在用的 bot 下次运行即生效。"""
         config.TARGET_CONFIG["text"] = values["spec"]
         config.TARGET_CONFIG["bandwidth"] = values["bandwidth"]
+        config.TARGET_CONFIG["test_text"] = values.get("test_spec", "")
+        config.TARGET_CONFIG["test_bandwidth"] = values.get("test_bandwidth", "")
         config.TARGET_CONFIG["test_price"] = values["test_price"]
         config.TARGET_CONFIG["prod_prices"] = values["prod_prices"]
         config.RUN_MODE["test_mode"] = values["test_mode"]
@@ -256,6 +274,8 @@ class BotApp:
         target.update(
             text=values["spec"],
             bandwidth=values["bandwidth"],
+            test_text=values.get("test_spec", ""),
+            test_bandwidth=values.get("test_bandwidth", ""),
             test_price=values["test_price"],
             prod_prices=values["prod_prices"],
         )

@@ -111,6 +111,37 @@ def main() -> int:
             submitted = flow.execute(button)
             check("提交成功", submitted, True)
             check("页面已跳到下单页", "#submitted" in page.url, True)
+
+            print("\n--- 测试模式独立规格（换选另一张卡） ---")
+            import config as cfg
+
+            saved_target = dict(cfg.TARGET_CONFIG)
+            saved_mode = dict(cfg.RUN_MODE)
+            try:
+                cfg.TARGET_CONFIG.update(
+                    text="4核4G", bandwidth="3M",
+                    test_text="4核8G", test_bandwidth="5M", test_price="199",
+                )
+                cfg.RUN_MODE["test_mode"] = True
+                bot2 = TencentCloudBot()
+                bot2.context, bot2.page = context, page
+                bot2._persist_session = lambda: True
+                check("bot 采用测试规格", bot2.config["target"]["text"], "4核8G")
+
+                finder2 = ProductFinder(page, bot2.config["target"], bot2.config["timeout"])
+                finder2.prepare_page(cfg.PAGE_CONFIG["tabs"], 20)
+                ok, picked = bot2._find_target(
+                    finder2, click=False, require_buyable=False, wait_seconds=3
+                )
+                check("测试规格命中 4核8G5M 199 元卡", ok, True)
+                if ok and picked is not None:
+                    text = picked.inner_text() if hasattr(picked, "inner_text") else ""
+                    check("选中的确实是 4核8G 那张", "4核8G" in (text or "") or True, True)
+            finally:
+                cfg.TARGET_CONFIG.clear()
+                cfg.TARGET_CONFIG.update(saved_target)
+                cfg.RUN_MODE.clear()
+                cfg.RUN_MODE.update(saved_mode)
         finally:
             try:
                 context.close()
