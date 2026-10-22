@@ -33,8 +33,9 @@ TARGET_CONFIG = {
 PAGE_CONFIG = {
     "url": "https://cloud.tencent.com/act/pro/double12-2025#MS",
     "tabs": ["限时秒杀", "全线产品特惠"],
+    # 最多向下滚多少屏（见到秒杀模块就提前停，不会真滚满）
     "scroll_times": 20,
-    "scroll_interval": 1.0,
+    "scroll_interval": 0.25,     # 仅"不等待秒杀模块"的路径下每屏间隔（秒）
 }
 
 # 镜像选项（按顺序尝试）

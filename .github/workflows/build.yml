@@ -33,14 +33,18 @@ jobs:
       - name: Compile check
         run: python -m compileall -q .
 
-      # 回归测试：选品 / 购买流程 / 登录判定 / 界面 / 版本一致性
+      # 回归测试：选品 / 购买流程 / 登录判定 / 倒计时 / 界面 / 版本一致性
+      # test_js_probes 需要浏览器：CI 的 windows-latest 自带 Edge；没有则自动跳过
       - name: Regression tests
         run: |
           python scripts/test_product_matcher.py
           python scripts/test_purchase_flow.py
           python scripts/test_login_detect.py
+          python scripts/test_timing.py
           python scripts/test_gui.py
           python scripts/test_version.py
+          python scripts/test_js_probes.py
+          python scripts/test_integration_flow.py
 
       # ---------- 产物一：文件夹版（含命令行，启动快） ----------
       - name: Build folder edition

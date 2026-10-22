@@ -4,7 +4,6 @@
 """
 import sys
 import io
-import os
 import time
 import threading
 import datetime
@@ -169,6 +168,9 @@ class TencentCloudBot:
             
             # 1. 确保登录
             self._ensure_login()
+            if self.stopped:
+                self._keep_browser_open()
+                return
             
             # 2. 提前定位商品 (找不到就一直找，直到找到为止)
             buy_button = None
@@ -180,10 +182,12 @@ class TencentCloudBot:
                 buy_button = self._locate_target_product(finder)
                 if not buy_button:
                     log("未找到目标商品，5秒后刷新重试...", "WARNING")
-                    time.sleep(5)
-                    self.page.reload()
-                    self.page.wait_for_load_state('domcontentloaded')
-                    self.page.wait_for_timeout(3000)
+                    self._sleep_cancellable(5)
+                    if self.stopped:
+                        self._keep_browser_open()
+                        return
+                    self.page.reload(wait_until='domcontentloaded')
+                    self.page.wait_for_timeout(800)
             
             # 3. 等待抢购时间
             if self._wait_for_buy_time():
@@ -254,18 +258,24 @@ class TencentCloudBot:
             # 触发登录弹窗（如果没弹出来的话，随便点个按钮触发一下）
             # 这里简单点，直接让用户操作
             
-            # 循环检测登录状态
-            while True:
+            # 循环检测登录状态（可被「停止」按钮中断）
+            while not self.stopped:
                 if handler.check_login_success_simple():
                     log("登录成功！准备进行下一步...", "SUCCESS")
                     # 登录成功立即落盘，避免用户直接关窗口导致登录态丢失
                     self._persist_session()
                     break
-                time.sleep(1)
+                time.sleep(0.5)
         else:
             log("检测到已登录，继续下一步", "SUCCESS")
             # 顺手刷新一次快照（延长会话型 cookie 的有效窗口）
             self._persist_session()
+
+    def _sleep_cancellable(self, seconds):
+        """可被「停止」打断的等待。"""
+        deadline = time.time() + max(0, seconds)
+        while not self.stopped and time.time() < deadline:
+            time.sleep(min(0.25, max(0.01, deadline - time.time())))
 
     def _locate_target_product(self, finder):
         """提前定位商品并滚动到可见区域"""
@@ -277,7 +287,6 @@ class TencentCloudBot:
             self.config["page"]["scroll_times"]
         )
         
-        target_prices = self._get_target_prices()
         # 查找但不点击 (click=False)；开抢前按钮可能还是「添加提醒」，
         # 此时只要求锁定卡片位置，不要求此刻可购买。
         # wait_seconds：秒杀模块异步渲染，给它一点时间再判定失败。
@@ -291,7 +300,7 @@ class TencentCloudBot:
             try:
                 button.evaluate("element => element.scrollIntoView({behavior: 'smooth', block: 'center'})")
                 # 稍微等待滚动完成
-                self.page.wait_for_timeout(500)
+                self.page.wait_for_timeout(300)
                 # 再用 Playwright 的方法确保一下
                 button.scroll_into_view_if_needed()
                 # 高亮
@@ -360,6 +369,14 @@ class TencentCloudBot:
                     if self.context.pages
                     else self.context.new_page()
                 )
+                # 默认操作超时压到 8 秒：Playwright 默认 30 秒，任何一处
+                # 「点了没反应」都会让抢购停摆半分钟。需要长等待的地方
+                # （导航、登录）都在代码里显式给了 timeout。
+                try:
+                    self.context.set_default_timeout(8000)
+                    self.context.set_default_navigation_timeout(30000)
+                except Exception:
+                    pass
                 log(f"浏览器已启动: {label}", "SUCCESS")
                 log(f"用户数据目录: {profile_dir}", "INFO")
                 # 回灌上次的登录态（关键：会话型 cookie 只能靠快照保住）
@@ -383,16 +400,30 @@ class TencentCloudBot:
         return _save_session_state(self.context, _resolve_state_file(browser_cfg))
     
     def _open_page(self):
-        """打开活动页面"""
+        """打开活动页面
+
+        性能：原来固定 wait_for_timeout(3000) 干等。改成「等 Tab 出现」——
+        首屏渲染快就立刻往下走，慢的话最多 5 秒（比固定 3 秒更聪明）。
+        """
         log("打开活动页面...", "INFO")
         url = self.config["page"]["url"]
         self.page.goto(url, wait_until='domcontentloaded')
-        self.page.wait_for_timeout(3000)
+        try:
+            self.page.wait_for_selector(".qc-tabs__nav-item, [role=tab]", timeout=5000)
+        except Exception:
+            pass
+        self.page.wait_for_timeout(300)
         log("页面加载完成", "SUCCESS")
     
     def _wait_for_buy_time(self):
         """
         等待抢购时间
+
+        性能要点：
+          * 触发判定收紧到毫秒级：最后 1 秒内不再 0.5 秒一跳，而是「睡到
+            目标点前 10ms」，避免准点了才发现、白丢几百毫秒；
+          * 今天的时间点如果全都过去了，直接报错返回，不再空等 2 小时；
+          * 轮询间隔 250ms（页面本身不忙），CPU 占用可以忽略。
         """
         # 测试模式：立即执行
         if self.config["run_mode"]["test_mode"]:
@@ -404,11 +435,36 @@ class TencentCloudBot:
         max_wait = 2 * 3600  # 最多等待2小时
         start_time = time.time()
         
-        last_refresh_time = time.time()
         # 已执行赛前刷新的时间点。多个 buy_times 时每个时间点都要各刷新一次，
         # 早期版本用单个布尔量，第二个时间点不会刷新，页面可能已过期/改版。
         refreshed_times = set()
-        
+
+        parsed = []
+        for buy_time in buy_times:
+            try:
+                hour, minute, second = (int(x) for x in str(buy_time).split(":"))
+                parsed.append((buy_time, datetime.time(hour, minute, second)))
+            except ValueError:
+                log(f"抢购时间格式不正确，已忽略: {buy_time}", "WARNING")
+        if not parsed:
+            log("没有可用的抢购时间点（格式应为 HH:MM:SS）", "ERROR")
+            return False
+
+        now = datetime.datetime.now()
+        upcoming = [
+            (label, moment)
+            for label, moment in ((lb, datetime.datetime.combine(now.date(), t)) for lb, t in parsed)
+            if (moment - now).total_seconds() > -2
+        ]
+        if not upcoming:
+            log(
+                f"今天的时间点都已过去（{buy_times}），不会再触发；"
+                "请改成后续时间点后重新开始",
+                "ERROR",
+            )
+            return False
+
+        last_status = 0.0
         while True:
             # 停止请求（GUI「停止」按钮）
             if self.stopped:
@@ -419,24 +475,19 @@ class TencentCloudBot:
             if time.time() - start_time > max_wait:
                 log("等待超时（2小时）", "ERROR")
                 return False
-            
-            # 检查是否到达抢购时间
+
             now = datetime.datetime.now()
-            current_time = now.strftime("%H:%M:%S")
-            
-            for buy_time in buy_times:
-                target = datetime.datetime.strptime(
-                    buy_time, "%H:%M:%S"
-                ).replace(year=now.year, month=now.month, day=now.day)
-                
+            next_gap = None
+
+            for buy_time, clock in parsed:
+                target = datetime.datetime.combine(now.date(), clock)
                 diff = (target - now).total_seconds()
-                
+
                 # --- 策略：赛前 2 分钟刷新保活 ---
                 if 60 < diff < 120 and buy_time not in refreshed_times:
                     log(f"距离抢购还有 {int(diff)} 秒，执行赛前刷新保活...", "INFO")
-                    self.page.reload()
-                    self.page.wait_for_load_state('domcontentloaded')
-                    self.page.wait_for_timeout(2000)
+                    self.page.reload(wait_until='domcontentloaded')
+                    self.page.wait_for_timeout(800)
                     
                     # 刷新后必须重新确保登录
                     from login_handler import LoginHandler
@@ -449,7 +500,7 @@ class TencentCloudBot:
                             if handler.check_login_success_simple():
                                 log("登录成功！", "SUCCESS")
                                 break
-                            time.sleep(1)
+                            time.sleep(0.5)
                         if self.stopped:
                             return False
                     else:
@@ -458,20 +509,16 @@ class TencentCloudBot:
                     # 重新定位商品 (非常重要！刷新后所有ElementHandle都失效了)
                     log("刷新后重新定位商品...", "INFO")
                     finder = ProductFinder(self.page, self.config["target"], self.config["timeout"])
-                    
-                    # 使用 _locate_target_product (它是TencentCloudBot的方法，需要self调用)
-                    # 但在这里我们直接调用finder逻辑即可，简单点
                     finder.prepare_page(self.config["page"]["tabs"], self.config["page"]["scroll_times"])
-                    target_prices = self._get_target_prices()
                     success, button = self._find_target(
-                        finder, click=False, require_buyable=False, wait_seconds=15
+                        finder, click=False, require_buyable=False, wait_seconds=8
                     )
                     
                     if success and button:
                         log("赛前重新定位成功，滚动并锁定...", "SUCCESS")
                         try:
                             button.evaluate("element => element.scrollIntoView({behavior: 'smooth', block: 'center'})")
-                            self.page.wait_for_timeout(500)
+                            self.page.wait_for_timeout(300)
                             button.highlight()
                         except:
                             pass
@@ -482,14 +529,28 @@ class TencentCloudBot:
                     log("赛前准备完成，继续倒计时...", "INFO")
 
                 # --- 策略：准点触发 ---
-                # 准点触发（0秒误差）
-                if 0 <= diff < 2:
+                # 只有真的到点（或刚好过点）才往下走。原来的 0 <= diff < 2
+                # 配合 0.5 秒轮询，实际会提前将近 2 秒点购买 —— 那时按钮
+                # 往往还没开放，点了也没用；而下面的 find_and_click 自带
+                # wait_seconds 轮询，准点触发既不吃亏也不会漏。
+                if -1.0 <= diff <= 0.3:
                     log(f"到达抢购时间: {buy_time}", "SUCCESS")
                     return True
-            
-            # 显示等待状态
-            print(f"\r⏳ 当前时间: {current_time} | 等待: {buy_times}", end="")
-            time.sleep(0.5)
+
+                if diff > 0 and (next_gap is None or diff < next_gap):
+                    next_gap = diff
+
+            # 显示等待状态（每秒最多一条，别刷屏）
+            if time.time() - last_status >= 1.0:
+                last_status = time.time()
+                current_time = now.strftime("%H:%M:%S")
+                print(f"\r⏳ 当前时间: {current_time} | 等待: {buy_times}", end="")
+
+            # 精确睡眠：离目标 1 秒内就睡到「目标前 10ms」，否则 250ms 一跳
+            if next_gap is not None and next_gap <= 1.0:
+                time.sleep(max(0.002, next_gap - 0.01))
+            else:
+                time.sleep(0.25)
     
     def _execute_purchase(self):
         """
@@ -559,19 +620,21 @@ class TencentCloudBot:
         return [list(target["prod_prices"])]
 
     def _find_target(self, finder, click=False, require_buyable=True, wait_seconds=0):
-        """按价格分组依次尝试定位，返回 (success, element)。"""
-        result = (False, None)
-        for tier in self._get_target_price_tiers():
-            log(f"按价格分组定位: {tier}", "DEBUG")
-            result = finder.find_and_click(
-                tier,
-                click=click,
-                require_buyable=require_buyable,
-                wait_seconds=wait_seconds,
-            )
-            if result[0]:
-                return result
-        return result
+        """按价格分组定位，返回 (success, element)。
+
+        性能：以前每组价格各调一次 find_and_click —— 测试模式下 109 档扫一遍
+        （可能还要等满 wait_seconds）没命中，再去扫 fallback 档，等于把同一批
+        卡片扫两遍、白等一轮。现在一次扫描、按分组优先级排序。
+        """
+        tiers = self._get_target_price_tiers()
+        log(f"按价格分组定位: {tiers}", "DEBUG")
+        return finder.find_and_click(
+            [price for tier in tiers for price in tier],
+            click=click,
+            require_buyable=require_buyable,
+            wait_seconds=wait_seconds,
+            tiers=tiers,
+        )
 
     @staticmethod
     def _is_buy_control(element):

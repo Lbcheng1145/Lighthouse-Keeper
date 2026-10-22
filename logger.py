@@ -65,9 +65,6 @@ class Logger:
 
     def _setup_logger(self):
         """配置日志系统"""
-        # 创建logs目录
-        log_dir = _app_dir() / "logs"
-
         # 日志文件名：logs/purchase_20260204_163045.log
         log_file, file_handler = self._open_log_file()
         

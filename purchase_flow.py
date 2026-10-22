@@ -1,21 +1,45 @@
 """
 购买流程模块 - 处理点击购买后的流程
+
+性能约定（v1.2.0）：
+    抢购时刻这条链路是「差 1 秒就丢单」的地方，因此所有「等某个东西出现」
+    都改成事件驱动或浏览器内轮询：
+      * 点完购买不再固定等满 3 秒新标签页，弹窗一出现就往下走；
+      * 等配置弹窗用 wait_for_selector（出现即返回），不再 300ms 一跳；
+      * 选镜像从「4 个文案 × 2 个范围 × 800ms 超时」的串行探测，
+        改成一次 evaluate 扫完并打标记；
+      * 等提交按钮可用（异步校验可能要几秒）整段压进浏览器里等，
+        一次往返替代「每 500ms × 6 组选择器」的轮询。
+    每次点击都显式带 timeout：默认 30 秒的点击超时在抢购时等于直接放弃。
 """
 from logger import log
-from utils import wait_with_progress
+from utils import (
+    UNSUPPORTED,
+    js_any_visible_fast,
+    js_find_option,
+    js_visible_any,
+    js_wait_enabled_button,
+)
 from login_handler import LoginHandler
 from product_finder import ProductFinder
 
 
 class PurchaseFlow:
     """购买流程处理器"""
-    
+
+    # 关键点击的超时上限。Playwright 默认 30 秒 —— 抢购时刻卡 30 秒等于丢单，
+    # 这里压到 3 秒：失败就记日志、交给上层决定，不在这里死等。
+    CLICK_TIMEOUT_MS = 3000
+
+    # 点完购买后，最多花多久同时观察「新标签页 / 页内配置弹窗」。
+    POPUP_OR_DIALOG_MS = 1000
+
     def __init__(self, page, config, timeout_config):
         self.page = page
         self.config = config
         self.timeout = timeout_config
         self.login_handler = LoginHandler(page, timeout_config)
-    
+
     def execute(self, buy_button):
         """
         执行购买流程
@@ -74,7 +98,10 @@ class PurchaseFlow:
         if self._is_activity_page(current_url):
             # 二次检测：有些页面弹窗出现得慢
             try:
-                if self.page.get_by_text("镜像", exact=False).first.is_visible(timeout=1000):
+                mirror = js_any_visible_fast(self.page, "text=镜像")
+                if mirror is UNSUPPORTED:
+                    mirror = self.page.get_by_text("镜像", exact=False).first.is_visible(timeout=1000)
+                if mirror:
                     log("二次检测发现弹窗，继续流程", "INFO")
                     return self._select_image()
             except Exception:
@@ -111,7 +138,10 @@ class PurchaseFlow:
                 return
 
     def _log_page_state(self, label):
-        """记录当前页面状态，便于排查「点了没反应 / 提示登录」这类问题。"""
+        """记录当前页面状态，便于排查「点了没反应 / 提示登录」这类问题。
+
+        性能：4 个选择器一次 evaluate 判断完，不再逐个等 200ms 超时。
+        """
         checks = (
             (".uno3-dialog", "配置弹窗"),
             (".accsys-tp-modal", "登录弹窗"),
@@ -119,29 +149,59 @@ class PurchaseFlow:
             ('img[src*="qrcode"]', "二维码"),
         )
         found = []
-        for selector, name in checks:
-            try:
-                if self.page.locator(selector).first.is_visible(timeout=200):
-                    found.append(name)
-            except Exception:
-                continue
+
+        probe = js_visible_any(self.page, [sel for sel, _ in checks])
+        if probe is not UNSUPPORTED:
+            if probe:
+                found = [name for sel, name in checks if sel == probe]
+        else:
+            for selector, name in checks:
+                try:
+                    if self.page.locator(selector).first.is_visible(timeout=200):
+                        found.append(name)
+                except Exception:
+                    continue
         try:
             url = self.page.url
         except Exception:
             url = "(读不到)"
         log(f"{label}: URL={url} | 可见元素={found or '无'}", "DEBUG")
 
+    def _dialog_visible(self):
+        """配置弹窗是否已经可见（一次往返）。"""
+        probe = js_any_visible_fast(self.page, ".uno3-dialog")
+        if probe is not UNSUPPORTED:
+            return bool(probe)
+        try:
+            return bool(self.page.locator(".uno3-dialog").first.is_visible(timeout=100))
+        except Exception:
+            return False
+
     def _wait_for_dialog(self, timeout_ms):
-        """轮询等待配置弹窗出现。"""
-        waited = 0
-        while waited < timeout_ms:
+        """等待配置弹窗出现。
+
+        事件驱动：弹窗一出现就返回，不再「睡 300ms 查一次」。
+        没有 wait_for_selector 的页面对象（测试桩）退化为轮询。
+        """
+        waiter = getattr(self.page, "wait_for_selector", None)
+        if waiter is not None:
             try:
-                if self.page.locator('.uno3-dialog').first.is_visible(timeout=300):
-                    return True
+                waiter(".uno3-dialog", state="visible", timeout=max(1, int(timeout_ms)))
+                return True
             except Exception:
-                pass
-            self.page.wait_for_timeout(300)
-            waited += 300
+                # 超时、或页面正在导航都走这里：再用一次可见性判断兜底
+                return self._dialog_visible()
+
+        waited = 0
+        step = 150
+        while waited < timeout_ms:
+            if self._dialog_visible():
+                return True
+            try:
+                self.page.wait_for_timeout(step)
+            except Exception:
+                return False
+            waited += step
         return False
 
     def _click_buy_button(self, button):
@@ -151,6 +211,10 @@ class PurchaseFlow:
         expect_popup 超时抛异常后代码又点了一次 —— 同一个按钮被点两次，
         于是下两单。现在把「点击」与「是否开了新标签」解耦：先点一次，
         再轮询 context.pages 判断有没有新标签。
+
+        性能：原来固定轮询 15 × 200ms = 3 秒等新标签，而活动页的配置弹窗
+        根本不开新标签 —— 这 3 秒是纯白等。现在「新标签 / 配置弹窗」同时
+        观察，哪个先出现就往哪走。
 
         Returns:
             新标签页 page，或 None（没有新标签页）
@@ -164,7 +228,7 @@ class PurchaseFlow:
 
         try:
             # 使用 force=True 强制点击，防止被登录弹窗遮挡导致的点击超时
-            button.click(force=True)
+            button.click(force=True, timeout=self.CLICK_TIMEOUT_MS)
         except Exception as exc:
             text = str(exc).lower()
             if "intercepts pointer events" in text:
@@ -174,18 +238,26 @@ class PurchaseFlow:
             # 这里不重试：点击可能已经生效，重试会把「可能一单」变成「确定两单」。
             return None
 
-        # 轮询新标签页（最多约 3 秒）
-        if context is not None:
-            for _ in range(15):
-                if len(context.pages) > pages_before:
-                    new_page = context.pages[-1]
-                    try:
-                        new_page.wait_for_load_state('domcontentloaded', timeout=5000)
-                    except Exception:
-                        pass
-                    log(f"检测到新标签页: {new_page.url}", "INFO")
-                    return new_page
-                self.page.wait_for_timeout(200)
+        if context is None:
+            return None
+
+        steps = max(1, int(self.POPUP_OR_DIALOG_MS / 100))
+        for _ in range(steps):
+            if len(context.pages) > pages_before:
+                new_page = context.pages[-1]
+                try:
+                    new_page.wait_for_load_state('domcontentloaded', timeout=5000)
+                except Exception:
+                    pass
+                log(f"检测到新标签页: {new_page.url}", "INFO")
+                return new_page
+            if self._dialog_visible():
+                log("未开新标签页，配置弹窗已出现", "DEBUG")
+                return None
+            try:
+                self.page.wait_for_timeout(100)
+            except Exception:
+                break
 
         log("未检测到新标签页，按页内弹窗继续", "DEBUG")
         return None
@@ -195,33 +267,21 @@ class PurchaseFlow:
         return 'act/pro' in url or 'double12' in url
     
     def _retry_purchase(self):
-        """重新定位商品并购买"""
-        log("重新定位商品...", "INFO")
-        
-        # 等待页面稳定
-        wait_with_progress(self.page, 3, "页面加载等待")
-        
-        # 重新初始化定位：先回到顶部，然后按配置滚动
-        log("重置页面位置...", "DEBUG")
-        self.page.keyboard.press("Home")
-        self.page.wait_for_timeout(1000)
-        
-        # 获取配置的滚动次数（默认15次）
-        scroll_times = self.config["page"].get("scroll_times", 15)
-        log(f"执行滚动加载 ({scroll_times}次)...", "INFO")
-        
-        for i in range(scroll_times):
-            self.page.keyboard.press("PageDown")
-            self.page.wait_for_timeout(500)
-        
-        # 获取价格配置
-        target_prices = self._get_target_prices()
+        """重新定位商品并购买
 
-        # 查找商品：复用 ProductFinder 的严格判据（规格 + 价格 + 规格细节），
-        # 不再用 get_by_text 遍历祖先 div —— 那套判据与主流程不一致，
-        # 且只查前 20 个元素，重试路径更容易点到相邻规格。
+        性能：以前是「固定等 3 秒 + Home + 20 次 PageDown 各 0.5 秒」，
+        光滚动就 10 秒。现在复用 ProductFinder 的滚动等待（一次往返、
+        见到秒杀模块就停）。
+        """
+        log("重新定位商品...", "INFO")
+
+        scroll_times = self.config["page"].get("scroll_times", 20)
         finder = ProductFinder(self.page, self.config["target"], self.timeout)
-        ok, button = finder.find_and_click(target_prices, click=False)
+        finder.ensure_full_render(max_steps=max(10, int(scroll_times)))
+
+        ok, button = finder.find_and_click(
+            self._get_target_prices(), click=False, require_buyable=True, wait_seconds=3
+        )
 
         if not ok or button is None:
             log("重新定位失败", "ERROR")
@@ -229,57 +289,75 @@ class PurchaseFlow:
 
         log("重新找到商品，点击购买", "SUCCESS")
         try:
-            button.click(force=True)
+            button.click(force=True, timeout=self.CLICK_TIMEOUT_MS)
         except Exception as e:
             log(f"重新点击异常，尝试常规点击: {e}", "WARNING")
-            button.click()
+            button.click(timeout=self.CLICK_TIMEOUT_MS)
 
         # 极速模式：不再死等3秒，而是等待DOM加载（必须有上限，
         # 否则页面一直在加载时这里会卡满默认 30 秒）
-        try:
-            self.page.wait_for_load_state('domcontentloaded', timeout=5000)
-        except Exception:
-            log("页面仍在加载，继续尝试处理配置弹窗", "DEBUG")
+        self._ensure_page_ready(3000)
         return self._select_image()
-    
+
+    def _ensure_page_ready(self, timeout_ms=3000):
+        """等 DOM 就绪，但不许按默认 30 秒死等。"""
+        try:
+            self.page.wait_for_load_state('domcontentloaded', timeout=timeout_ms)
+        except Exception:
+            log("页面仍在加载中，先继续处理配置弹窗", "DEBUG")
+
     def _select_image(self):
         """在配置弹窗里选择镜像并提交订单。
 
         坑 1：`wait_for_load_state('domcontentloaded')` 不给超时会按默认 30 秒等，
         点完购买后如果页面还在加载，表现就是「卡在配置页不动」。
         坑 2：镜像是弹窗里的选项，早期在整页范围里找，容易命中页面其它同名文字。
+
+        性能：原来是「4 个镜像名 × 2 个范围 × 800ms」的串行探测，最坏 6.4 秒，
+        而多数页面根本没有配置里的镜像名 —— 等于每次抢购白等几秒。现在一次
+        evaluate 扫完（弹窗优先、退到整页），命中就打标记再点。
         """
         log("在配置弹窗里选择镜像...", "INFO")
+        self._ensure_page_ready(3000)
 
-        try:
-            self.page.wait_for_load_state('domcontentloaded', timeout=5000)
-        except Exception:
-            log("页面仍在加载中，先继续处理配置弹窗", "DEBUG")
+        if not self._pick_image():
+            log("未找到指定镜像，按默认选择继续", "WARNING")
+        return self._submit_order()
 
+    def _pick_image(self):
+        """选镜像。命中返回 True；没有可用镜像返回 False（调用方继续提交）。"""
+        names = [n for n in (self.config.get("images") or []) if n]
+        if not names:
+            return False
+
+        picked = js_find_option(self.page, names, root_selector=".uno3-dialog")
+        if picked is not UNSUPPORTED:
+            if not picked:
+                return False
+            log(f"找到镜像: {picked}", "SUCCESS")
+            try:
+                self.page.locator('[data-lk-opt="1"]').first.click(
+                    timeout=self.CLICK_TIMEOUT_MS
+                )
+                return True
+            except Exception as exc:
+                log(f"点击镜像失败: {exc}", "WARNING")
+                return False
+
+        # ---- 回退路径：逐名逐范围探测 ----
         dialog = self._find_dialog_scope()
         scope = dialog if dialog is not None else self.page
-
-        # 1. 选择镜像（先在弹窗内找，找不到再退回整页）
-        image_found = False
-        for image_name in self.config["images"]:
+        for image_name in names:
             for candidate_scope, label in ((scope, "弹窗内"), (self.page, "整页")):
                 try:
                     img_el = candidate_scope.locator(f'text={image_name}').first
                     if img_el.is_visible(timeout=800):
                         log(f"找到镜像（{label}）: {image_name}", "SUCCESS")
-                        img_el.click()
-                        image_found = True
-                        break
+                        img_el.click(timeout=self.CLICK_TIMEOUT_MS)
+                        return True
                 except Exception:
                     continue
-            if image_found:
-                break
-
-        if not image_found:
-            log("未找到指定镜像，按默认选择继续", "WARNING")
-
-        # 2. 提交
-        return self._submit_order()
+        return False
 
     # 提交按钮文案：只认明确的提交动作
     SUBMIT_TEXTS = ("立即购买", "确认购买", "立即抢购", "提交订单", "确认下单", "确定")
@@ -330,7 +408,7 @@ class PurchaseFlow:
                 btn_text = "(未知)"
 
             try:
-                btn.click(force=True)
+                btn.click(force=True, timeout=self.CLICK_TIMEOUT_MS)
                 log(f"已点击提交按钮: {btn_text}", "INFO")
             except Exception as exc:
                 log(f"点击提交按钮失败: {exc}", "WARNING")
@@ -347,7 +425,28 @@ class PurchaseFlow:
 
         按钮一开始可能是禁用态（要等库存/地域/镜像校验），
         这里给它一点时间，而不是看了一眼就判定失败。
+
+        性能：整段等待压进浏览器里做（一次往返），不再是
+        「每 500ms × 6 组文案选择器 × 每个候选一次 is_visible」。
         """
+        wait_ms = int(float(self.SUBMIT_WAIT_SECONDS) * 1000)
+        scope_kind = "page" if scope is self.page else "dialog"
+        probe = js_wait_enabled_button(
+            self.page,
+            self.SUBMIT_TEXTS,
+            scope=scope_kind,
+            wait_ms=wait_ms,
+            interval_ms=120,
+        )
+        if probe is not UNSUPPORTED:
+            if not probe:
+                return None
+            try:
+                return self.page.locator('[data-lk-submit="1"]').first
+            except Exception:
+                return None
+
+        # ---- 回退路径 ----
         deadline_attempts = max(1, int(self.SUBMIT_WAIT_SECONDS / 0.5))
         for i in range(deadline_attempts):
             btn = self._find_submit_button(scope)
@@ -393,6 +492,15 @@ class PurchaseFlow:
 
     def _find_dialog_scope(self):
         """返回可见的配置弹窗；没有则返回 None。"""
+        probe = js_any_visible_fast(self.page, ".uno3-dialog")
+        if probe is not UNSUPPORTED:
+            if not probe:
+                return None
+            try:
+                return self.page.locator('.uno3-dialog').first
+            except Exception:
+                return None
+
         try:
             dialog = self.page.locator('.uno3-dialog').first
             if dialog.is_visible(timeout=1500):
@@ -439,25 +547,29 @@ class PurchaseFlow:
             return False
 
     def _wait_submitted(self, start_url, timeout_ms=3000):
-        """确认订单是否已提交：URL 变化，或配置弹窗关闭。"""
+        """确认订单是否已提交：URL 变化，或配置弹窗关闭。
+
+        轮询间隔 150ms（原来 300ms）：既能更快确认提交，也不会把页面查垮。
+        """
         waited = 0
+        step = 150
         while waited < timeout_ms:
-            self.page.wait_for_timeout(300)
-            waited += 300
+            try:
+                self.page.wait_for_timeout(step)
+            except Exception:
+                return True
+            waited += step
             try:
                 if self.page.url != start_url:
                     log(f"检测到页面跳转，提交成功: {self.page.url}", "SUCCESS")
                     return True
             except Exception:
                 return True
-            try:
-                if not self.page.locator('.uno3-dialog').first.is_visible(timeout=200):
-                    log("配置弹窗已关闭，判定提交成功", "SUCCESS")
-                    return True
-            except Exception:
-                pass
+            if not self._dialog_visible():
+                log("配置弹窗已关闭，判定提交成功", "SUCCESS")
+                return True
         return False
-    
+
     def _get_target_prices(self):
         """获取目标价格列表"""
         if self.config["run_mode"]["test_mode"]:

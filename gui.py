@@ -20,7 +20,17 @@ from tkinter import messagebox, scrolledtext, ttk
 import config
 from config import VERSION
 from logger import get_log_file
-from main import TencentCloudBot
+
+
+def _bot_class():
+    """延迟导入抢购主流程。
+
+    主流程要 import playwright（打包后还要从 PYZ 里解出来），而窗口本身
+    只需要 tkinter。放到点「开始抢购」时再导入，窗口能早一点显示出来。
+    """
+    from main import TencentCloudBot
+
+    return TencentCloudBot
 
 # 日志级别 -> 窗口里文字标签的颜色
 LEVEL_TAGS = {
@@ -194,9 +204,9 @@ class BotApp:
         self._on_mode_change()
 
     def _on_mode_change(self):
-        """测试/正式模式的输入框可编辑状态。"""
-        testing = self.mode_var.get() == "test"
-        self.test_price_var.set(self.test_price_var.get() or "109")
+        """切换模式时补一个默认测试价（其余输入项两种模式共用）。"""
+        if not self.test_price_var.get().strip():
+            self.test_price_var.set("109")
 
     def _collect_config(self) -> dict:
         times = _split(self.buy_times_var.get()) or ["10:00:00"]
@@ -280,7 +290,7 @@ class BotApp:
         self._apply_to_runtime(values)
         self._write_local_config(values)
 
-        self.bot = TencentCloudBot()
+        self.bot = _bot_class()()
         self.bot.config["run_mode"]["test_mode"] = values["test_mode"]
         self.bot._stop_event.clear()
 

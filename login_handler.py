@@ -1,9 +1,15 @@
 """
 登录模块 - 处理登录相关逻辑
+
+性能约定（v1.2.0）：
+    登录判定的每个判据都是一次「元素是否可见」查询，而元素不存在时
+    `is_visible(timeout=...)` 要把 timeout 等满。9 个强证据 + 2 个弱证据
+    串行探测，最坏就是 4 秒多 —— 抢购时刻这几秒很贵。现在先用一次
+    evaluate 批量判定，只有探测不可用（测试桩等）时才逐条回退。
 """
 import time
 from logger import log
-from utils import wait_with_progress
+from utils import UNSUPPORTED, js_any_visible_fast, js_visible_any
 
 
 class LoginHandler:
@@ -58,7 +64,14 @@ class LoginHandler:
         self.timeout = timeout_config
 
     def _first_visible(self, selectors, timeout):
-        """返回第一个可见的选择器，没有则返回 None。"""
+        """返回第一个可见的选择器，没有则返回 None。
+
+        先用一次 evaluate 批量探测；不支持时回退到逐条 locator 查询。
+        """
+        probe = js_visible_any(self.page, list(selectors))
+        if probe is not UNSUPPORTED:
+            return probe
+
         for indicator in selectors:
             try:
                 if self.page.locator(indicator).first.is_visible(timeout=timeout):
@@ -192,7 +205,7 @@ class LoginHandler:
                 user_logged_in = self._check_user_logged_in()
                 
                 # 检测4：登录弹窗是否还存在
-                login_modal_exists = self.page.locator('.accsys-tp-modal').first.is_visible(timeout=500)
+                login_modal_exists = self._visible_quick('.accsys-tp-modal')
                 
                 # 判断登录完成
                 # 条件1：明确检测到用户信息
@@ -212,7 +225,7 @@ class LoginHandler:
                 if qr_appeared and qr_gone and not login_modal_exists:
                     # 双重检查：等待2秒再次确认，防止只是闪烁
                     self.page.wait_for_timeout(2000)
-                    if not self._is_qr_visible() and not self.page.locator('.accsys-tp-modal').first.is_visible():
+                    if not self._is_qr_visible() and not self._visible_quick('.accsys-tp-modal'):
                         log("登录弹窗已消失，判定为登录成功", "WARNING")
                         return True
                     
@@ -222,8 +235,22 @@ class LoginHandler:
             
             time.sleep(1)
     
+    def _visible_quick(self, selector, timeout=200):
+        """快速判断单个选择器是否可见（一次往返，失败回退 locator）。"""
+        probe = js_any_visible_fast(self.page, selector)
+        if probe is not UNSUPPORTED:
+            return bool(probe)
+        try:
+            return bool(self.page.locator(selector).first.is_visible(timeout=timeout))
+        except Exception:
+            return False
+
     def _is_qr_visible(self):
         """检查二维码是否可见"""
+        probe = js_visible_any(self.page, self.QR_SELECTORS[:3])
+        if probe is not UNSUPPORTED:
+            return probe is not None
+
         for selector in self.QR_SELECTORS[:3]:  # 只检查前3个常用选择器
             try:
                 if self.page.locator(selector).first.is_visible(timeout=300):
@@ -234,6 +261,10 @@ class LoginHandler:
     
     def _check_user_logged_in(self):
         """检查用户是否已登录"""
+        probe = js_visible_any(self.page, self.USER_INFO_SELECTORS)
+        if probe is not UNSUPPORTED:
+            return probe is not None
+
         for selector in self.USER_INFO_SELECTORS:
             try:
                 if self.page.locator(selector).first.is_visible(timeout=300):
@@ -270,13 +301,10 @@ class LoginHandler:
             if self._is_qr_visible():
                 log("二维码已出现，进入扫码登录", "WARNING")
                 return self.wait_for_login_complete(True, old_url)
-            try:
-                if self.page.locator('.uno3-dialog').first.is_visible(timeout=300):
-                    log("配置弹窗已出现，说明登录态没问题，继续购买流程", "SUCCESS")
-                    return True
-            except Exception:
-                pass
-            time.sleep(1)
+            if self._visible_quick('.uno3-dialog', timeout=300):
+                log("配置弹窗已出现，说明登录态没问题，继续购买流程", "SUCCESS")
+                return True
+            time.sleep(0.3)
 
         log(
             f"等了 {self.NO_QR_GRACE_SECONDS} 秒仍没有二维码，"
