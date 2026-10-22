@@ -302,6 +302,10 @@ async (arg) => {
   const ready = () => {
     try { if (sel && document.querySelector(sel)) return true; } catch (e) {}
     if (!texts.length) return false;
+    // 先用整页纯文本做一次字符串快筛：不命中就直接返回，
+    // 省掉「遍历上千个元素 + 逐个 getBoundingClientRect」的强制布局开销。
+    const bodyText = document.body ? (document.body.textContent || '') : '';
+    if (!texts.some((t) => bodyText.includes(t))) return false;
     let all = [];
     try { all = document.querySelectorAll('body *'); } catch (e) { return false; }
     for (const el of all) {

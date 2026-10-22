@@ -7,8 +7,9 @@
 前提：本机已装 Edge 或 Chrome（Playwright 直接驱动它，不下载内核）。
 
 用法：
-    python scripts/bench_flow.py              # 跑一轮，打印各阶段耗时
-    python scripts/bench_flow.py --repeat 3   # 跑三轮取中位数
+    python scripts/bench_flow.py                    # 跑一轮，打印各阶段耗时
+    python scripts/bench_flow.py --repeat 3         # 跑三轮取中位数
+    python scripts/bench_flow.py --cards 200        # 模拟 200 张卡片的大活动页
 """
 import statistics
 import sys
@@ -119,14 +120,18 @@ function openDialog() {{
 """
 
 
-def build_html():
-    cards = [
-        {"text": CARD_OTHER, "kind": "normal"},
-        {"text": CARD_109, "kind": "normal"},
-        {"text": CARD_38, "kind": "seckill"},
-    ]
+def build_html(filler=0):
+    """构造合成活动页。
+
+    filler: 额外插入多少张「不相干的卡片」，用来模拟真实活动页的规模
+    （腾讯云活动页通常有上百张商品卡）。卡片越多，扫描成本越能暴露出来。
+    """
     import json
 
+    cards = [{"text": CARD_OTHER, "kind": "normal"} for _ in range(max(0, filler) // 2)]
+    cards.append({"text": CARD_109, "kind": "normal"})      # 目标（109 常售）
+    cards.extend({"text": CARD_OTHER, "kind": "normal"} for _ in range(max(0, filler) // 2))
+    cards.append({"text": CARD_38, "kind": "seckill"})      # 秒杀档（不应被选中）
     return PAGE_HTML.format(cards=json.dumps(cards, ensure_ascii=False))
 
 
@@ -205,10 +210,13 @@ def main():
     repeat = 1
     if "--repeat" in sys.argv:
         repeat = int(sys.argv[sys.argv.index("--repeat") + 1])
+    filler = 0
+    if "--cards" in sys.argv:
+        filler = int(sys.argv[sys.argv.index("--cards") + 1])
 
     import tempfile
 
-    html = build_html()
+    html = build_html(filler)
     fixture = Path(tempfile.mkdtemp(prefix="lk-fixture-")) / "activity.html"
     fixture.write_text(html, encoding="utf-8")
     page_url = fixture.as_uri()

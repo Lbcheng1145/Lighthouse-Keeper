@@ -72,14 +72,22 @@ def main() -> int:
         try:
             page = context.pages[0] if context.pages else context.new_page()
             context.set_default_timeout(8000)
-            page.goto(fixture.as_uri(), wait_until="domcontentloaded")
 
             bot = TencentCloudBot()
             bot.context = context
             bot.page = page
+            bot.config["page"]["url"] = fixture.as_uri()
             bot.config["run_mode"]["test_mode"] = True
             # 别把登录态快照写进仓库
             bot._persist_session = lambda: True
+
+            print("\n--- 打开页面（commit + 等 Tab 就绪）---")
+            try:
+                bot._open_page()
+                tabs = page.locator(".qc-tabs__nav-item").count()
+                check("页面已可操作（Tab 出现）", tabs >= 2, True)
+            except Exception as exc:
+                check(f"_open_page 未抛异常（{exc}）", False, True)
 
             print("\n--- 登录判定 ---")
             try:

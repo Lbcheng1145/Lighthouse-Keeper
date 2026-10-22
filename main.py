@@ -186,8 +186,11 @@ class TencentCloudBot:
                     if self.stopped:
                         self._keep_browser_open()
                         return
-                    self.page.reload(wait_until='domcontentloaded')
-                    self.page.wait_for_timeout(800)
+                    try:
+                        self.page.reload(wait_until='commit', timeout=30000)
+                    except Exception:
+                        pass
+                    self._wait_for_page_ready(8000)
             
             # 3. 等待抢购时间
             if self._wait_for_buy_time():
@@ -402,18 +405,39 @@ class TencentCloudBot:
     def _open_page(self):
         """打开活动页面
 
-        性能：原来固定 wait_for_timeout(3000) 干等。改成「等 Tab 出现」——
-        首屏渲染快就立刻往下走，慢的话最多 5 秒（比固定 3 秒更聪明）。
+        性能：以前 goto 等 domcontentloaded 再固定睡 3 秒。活动页脚本多，
+        domcontentloaded 本身就要好几秒，而真正需要的是「Tab 已经能点」。
+        现在用 wait_until='commit' 立即返回，然后等 Tab 元素出现 —— DOM 一可
+        操作就往下走，剩下的资源让浏览器慢慢加载（后面滚动定位本来也会等）。
         """
         log("打开活动页面...", "INFO")
         url = self.config["page"]["url"]
-        self.page.goto(url, wait_until='domcontentloaded')
         try:
-            self.page.wait_for_selector(".qc-tabs__nav-item, [role=tab]", timeout=5000)
+            self.page.goto(url, wait_until='commit', timeout=30000)
+        except Exception as exc:
+            log(f"页面跳转异常（继续尝试）: {_short_err(exc)}", "WARNING")
+        self._wait_for_page_ready(10000)
+        log("页面加载完成", "SUCCESS")
+
+    def _wait_for_page_ready(self, timeout_ms=10000):
+        """等「Tab 出现、页面可操作」。
+
+        这是比「等 domcontentloaded」更贴近实际的就绪信号：Tab 出来了，
+        就说明活动页主体已经渲染，可以点 Tab / 滚动了。超时则退回等
+        domcontentloaded，行为与旧版一致，不会更慢。
+        """
+        try:
+            self.page.wait_for_selector(".qc-tabs__nav-item, [role=tab]", timeout=timeout_ms)
+        except Exception:
+            log("首屏 Tab 未在预期时间内出现，按当前 DOM 继续", "WARNING")
+            try:
+                self.page.wait_for_load_state('domcontentloaded', timeout=5000)
+            except Exception:
+                pass
+        try:
+            self.page.wait_for_timeout(200)
         except Exception:
             pass
-        self.page.wait_for_timeout(300)
-        log("页面加载完成", "SUCCESS")
     
     def _wait_for_buy_time(self):
         """
@@ -486,8 +510,11 @@ class TencentCloudBot:
                 # --- 策略：赛前 2 分钟刷新保活 ---
                 if 60 < diff < 120 and buy_time not in refreshed_times:
                     log(f"距离抢购还有 {int(diff)} 秒，执行赛前刷新保活...", "INFO")
-                    self.page.reload(wait_until='domcontentloaded')
-                    self.page.wait_for_timeout(800)
+                    try:
+                        self.page.reload(wait_until='commit', timeout=30000)
+                    except Exception:
+                        pass
+                    self._wait_for_page_ready(8000)
                     
                     # 刷新后必须重新确保登录
                     from login_handler import LoginHandler

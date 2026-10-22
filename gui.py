@@ -94,7 +94,20 @@ class BotApp:
         logging.getLogger("TencentCloudBot").addHandler(self.handler)
 
         self.root.after(120, self._pump_logs)
+        # 窗口画出来之后再预热主流程：打包后 import playwright 要几百毫秒，
+        # 放到后台线程做，用户点「开始抢购」时就不用等了。
+        self.root.after(300, self._preheat)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _preheat(self):
+        """后台导入抢购主流程（只 import，不碰浏览器、不碰账号）。"""
+        def work():
+            try:
+                _bot_class()
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True, name="preheat").start()
 
     # ---------------- 界面 ----------------
     def _build_ui(self):

@@ -391,7 +391,11 @@ class PurchaseFlow:
                 log("未找到配置弹窗，改为在非活动页查找提交按钮", "WARNING")
                 scope = self.page
 
-            btn = self._wait_submit_button(scope)
+            # 第一次给足等待（页面异步校验库存/地域/镜像）；
+            # 第二次只给一半：这时多半是真的不可用，再死等 10 秒没有意义，
+            # 反而把「人工接手」的时间也拖没了。
+            wait_seconds = self.SUBMIT_WAIT_SECONDS if attempt == 0 else self.SUBMIT_WAIT_SECONDS / 2
+            btn = self._wait_submit_button(scope, wait_seconds=wait_seconds)
             if btn is None:
                 log(f"第 {attempt + 1} 次尝试：等不到可用的提交按钮", "WARNING")
                 self._dump_dialog_state(scope)
@@ -420,7 +424,7 @@ class PurchaseFlow:
         log("未确认提交成功，请人工点击（不再自动重复点击，避免重复下单）", "WARNING")
         return False
 
-    def _wait_submit_button(self, scope):
+    def _wait_submit_button(self, scope, wait_seconds=None):
         """轮询等待提交按钮变为可点击。
 
         按钮一开始可能是禁用态（要等库存/地域/镜像校验），
@@ -429,7 +433,9 @@ class PurchaseFlow:
         性能：整段等待压进浏览器里做（一次往返），不再是
         「每 500ms × 6 组文案选择器 × 每个候选一次 is_visible」。
         """
-        wait_ms = int(float(self.SUBMIT_WAIT_SECONDS) * 1000)
+        if wait_seconds is None:
+            wait_seconds = self.SUBMIT_WAIT_SECONDS
+        wait_ms = int(float(wait_seconds) * 1000)
         scope_kind = "page" if scope is self.page else "dialog"
         probe = js_wait_enabled_button(
             self.page,
@@ -447,7 +453,7 @@ class PurchaseFlow:
                 return None
 
         # ---- 回退路径 ----
-        deadline_attempts = max(1, int(self.SUBMIT_WAIT_SECONDS / 0.5))
+        deadline_attempts = max(1, int(wait_seconds / 0.5))
         for i in range(deadline_attempts):
             btn = self._find_submit_button(scope)
             if btn is not None:
